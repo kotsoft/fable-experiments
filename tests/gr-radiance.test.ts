@@ -58,6 +58,7 @@ describe('disk radiance reference model', () => {
     expect(inner).not.toBeNull();
     expect(outer).not.toBeNull();
     expect(inner!.temperature).toBeGreaterThan(outer!.temperature);
+    expect(inner!.observedTemperature).toBeCloseTo(inner!.temperature * inner!.redshift, 12);
     expect(inner!.bolometricIntensity).toBeGreaterThan(outer!.bolometricIntensity);
     expect(inner!.observedRgb.every(Number.isFinite)).toBe(true);
   });
@@ -81,6 +82,22 @@ describe('disk radiance reference model', () => {
     expect(phaseShifted).not.toBeNull();
     expect(phaseZero!.temperature).toBeCloseTo(phaseShifted!.temperature, 12);
     expect(phaseZero!.bolometricIntensity).not.toBeCloseTo(phaseShifted!.bolometricIntensity, 6);
+  });
+
+  it('shifts observed blackbody color temperature by redshift', () => {
+    const params = kerrSchildParams(0, 1);
+    const state = rayStateAt({ x: 8, y: 0, z: 0 }, { x: 0, y: -1, z: 0 }, params);
+    const sample = sampleDiskRadiance(state, params, { ...model, innerTemperature: 3600, boostPower: 4 });
+
+    expect(sample).not.toBeNull();
+    expect(sample!.observedTemperature).toBeCloseTo(sample!.temperature * sample!.redshift, 12);
+    const expectedColor = blackbodyRgb(sample!.observedTemperature);
+    const normalizedColor = sample!.observedRgb.map((channel) => channel / sample!.bolometricIntensity);
+
+    expect(normalizedColor[0]).toBeCloseTo(expectedColor[0], 12);
+    expect(normalizedColor[1]).toBeCloseTo(expectedColor[1], 12);
+    expect(normalizedColor[2]).toBeCloseTo(expectedColor[2], 12);
+    expect(sample!.emittedRgb).toEqual(blackbodyRgb(sample!.temperature));
   });
 
   it('uses Kerr circular-orbit direction for disk pattern speed', () => {
