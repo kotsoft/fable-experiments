@@ -1,4 +1,4 @@
-import { hamiltonian, nullCovectorFromDirection } from '../gr/geodesic';
+import { hamiltonian, nullCovectorFromDirection, stepNullGeodesic, type GeodesicState } from '../gr/geodesic';
 import { horizonRadius, kerrSchildNullSpatial, kerrSchildParams, kerrSchildRadius, kerrSchildScalar } from '../gr/kerrSchild';
 import { probeGridToReadback, READBACK_FLOATS_PER_RAY, ReadbackStatus } from '../gr/readback';
 import { renderProbeGrid, type ProbeGrid } from '../gr/referenceProbe';
@@ -6,6 +6,7 @@ import { buildObserverTetrad, staticObserverFourVelocity } from '../gr/tetrad';
 import { runWebGpuHamiltonianProbe } from './webgpuHamiltonianProbe';
 import { runWebGpuMetricProbe } from './webgpuMetricProbe';
 import { runWebGpuEchoReadback } from './webgpuReadback';
+import { runWebGpuStepProbe } from './webgpuStepProbe';
 
 type GpuNavigator = Navigator & {
   gpu?: {
@@ -64,6 +65,13 @@ hamiltonianButton.style.cssText =
   'cursor:pointer;font:600 13px system-ui,sans-serif;margin:8px 0 0 8px;';
 panel.appendChild(hamiltonianButton);
 
+const stepButton = document.createElement('button');
+stepButton.textContent = 'run WebGPU step probe';
+stepButton.style.cssText =
+  'background:#2f3442;color:#e6eaf4;border:1px solid #4a5060;border-radius:6px;padding:8px 10px;' +
+  'cursor:pointer;font:600 13px system-ui,sans-serif;margin:8px 0 0 0;';
+panel.appendChild(stepButton);
+
 const summary = document.createElement('pre');
 summary.style.cssText = 'white-space:pre-wrap;margin:14px 0 0;color:#d7dbe5;';
 panel.appendChild(summary);
@@ -85,6 +93,9 @@ metricButton.addEventListener('click', () => {
 });
 hamiltonianButton.addEventListener('click', () => {
   void runGpuHamiltonianProbe();
+});
+stepButton.addEventListener('click', () => {
+  void runGpuStepProbe();
 });
 
 async function detectWebGpu() {
@@ -120,7 +131,8 @@ function renderCpuProbe() {
     `floats/ray: ${READBACK_FLOATS_PER_RAY}\n` +
     'gpu echo: not run\n' +
     'gpu metric: not run\n' +
-    'gpu Hamiltonian: not run';
+    'gpu Hamiltonian: not run\n' +
+    'gpu step: not run';
 
   table.textContent = [
     'px py status steps radius drift diskR redshift intensity rgb',
@@ -192,6 +204,24 @@ async function runGpuHamiltonianProbe() {
   } finally {
     hamiltonianButton.textContent = 'run WebGPU Hamiltonian probe';
     hamiltonianButton.removeAttribute('disabled');
+  }
+}
+
+async function runGpuStepProbe() {
+  const { samples, expected } = createStepProbeBuffers();
+  stepButton.textContent = 'running WebGPU step probe...';
+  stepButton.setAttribute('disabled', 'true');
+  try {
+    const result = await runWebGpuStepProbe(samples, expected);
+    const stepLine = result.supported
+      ? `max diff ${(result.maxAbsDiff ?? Number.NaN).toExponential(3)}`
+      : result.message;
+    setSummaryLine('gpu step', stepLine);
+  } catch (error) {
+    setSummaryLine('gpu step', `failed (${errorMessage(error)})`);
+  } finally {
+    stepButton.textContent = 'run WebGPU step probe';
+    stepButton.removeAttribute('disabled');
   }
 }
 
@@ -276,6 +306,47 @@ function createHamiltonianProbeBuffers(): { samples: Float32Array; expected: Flo
     expected[expectedBase + 1] = radius;
     expected[expectedBase + 2] = scalar;
     expected[expectedBase + 3] = l.x * l.x + l.y * l.y + l.z * l.z;
+  });
+  return { samples, expected };
+}
+
+function createStepProbeBuffers(): { samples: Float32Array; expected: Float32Array } {
+  const rows = [
+    { position: { x: 8, y: 0, z: 1 }, spin: 0, direction: { x: -0.25, y: 0.05, z: 1 }, step: 0.015 },
+    { position: { x: 7, y: 2, z: -1.5 }, spin: 0.45, direction: { x: 0.18, y: -0.1, z: 1 }, step: 0.012 },
+    { position: { x: -4, y: 6, z: 2.25 }, spin: 0.75, direction: { x: -0.15, y: 0.22, z: 1 }, step: 0.01 },
+  ];
+  const samples = new Float32Array(rows.length * 12);
+  const expected = new Float32Array(rows.length * 8);
+  rows.forEach((row, index) => {
+    const params = kerrSchildParams(row.spin, 1);
+    const state: GeodesicState = {
+      position: { t: 0, ...row.position },
+      momentum: nullCovectorFromDirection({ t: 0, ...row.position }, row.direction, params),
+    };
+    const next = stepNullGeodesic(state, params, row.step);
+    const sampleBase = index * 12;
+    const expectedBase = index * 8;
+    samples[sampleBase] = state.position.t;
+    samples[sampleBase + 1] = state.position.x;
+    samples[sampleBase + 2] = state.position.y;
+    samples[sampleBase + 3] = state.position.z;
+    samples[sampleBase + 4] = state.momentum.t;
+    samples[sampleBase + 5] = state.momentum.x;
+    samples[sampleBase + 6] = state.momentum.y;
+    samples[sampleBase + 7] = state.momentum.z;
+    samples[sampleBase + 8] = row.spin;
+    samples[sampleBase + 9] = row.step;
+    samples[sampleBase + 10] = 0;
+    samples[sampleBase + 11] = 0;
+    expected[expectedBase] = next.position.t;
+    expected[expectedBase + 1] = next.position.x;
+    expected[expectedBase + 2] = next.position.y;
+    expected[expectedBase + 3] = next.position.z;
+    expected[expectedBase + 4] = next.momentum.t;
+    expected[expectedBase + 5] = next.momentum.x;
+    expected[expectedBase + 6] = next.momentum.y;
+    expected[expectedBase + 7] = next.momentum.z;
   });
   return { samples, expected };
 }
