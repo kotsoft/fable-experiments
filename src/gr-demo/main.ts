@@ -52,17 +52,17 @@ type GpuNavigator = Navigator & {
 const root = document.createElement('main');
 root.style.cssText =
   'min-height:100vh;background:#08090d;color:#d7dbe5;font:14px/1.55 ui-monospace,SFMono-Regular,Consolas,monospace;' +
-  'display:grid;grid-template-columns:minmax(280px,380px) 1fr;gap:18px;padding:18px;box-sizing:border-box;';
+  'display:grid;grid-template-columns:minmax(300px,400px) minmax(0,1fr);gap:18px;padding:18px;box-sizing:border-box;';
 document.body.style.margin = '0';
 document.body.appendChild(root);
 
 const panel = section();
 const output = section();
-output.style.overflow = 'auto';
+output.style.cssText += 'overflow:auto;min-width:0;';
 root.append(panel, output);
 
 const title = document.createElement('h1');
-title.textContent = 'Kerr-Schild GRRT';
+title.textContent = 'Kerr Black Hole Renderer';
 title.style.cssText = 'font:600 18px system-ui,sans-serif;margin:0 0 10px;color:#fff;';
 panel.appendChild(title);
 
@@ -83,7 +83,7 @@ const pitchInput = controlRange('look pitch', -35, 35, 1, 0);
 const fovInput = controlRange('fov', 35, 85, 1, 47);
 const diskInnerInput = controlRange('disk inner', 1.4, 8, 0.1, 3);
 const diskOuterInput = controlRange('disk outer', 6, 30, 0.5, 18);
-const diskTempInput = controlRange('disk temp', 3000, 18000, 250, 7200);
+const diskTempInput = controlRange('disk temp', 3000, 18000, 100, 7200);
 const diskEmissionInput = controlRange('disk emission', 0.1, 4, 0.05, 1);
 const diskBoostInput = controlRange('disk boost', 0, 6, 0.1, 4);
 const diskDirectionSelect = document.createElement('select');
@@ -115,85 +115,109 @@ resolutionSelect.style.cssText =
 });
 controls.appendChild(labeledControl('resolution', resolutionSelect));
 
+const primaryActions = document.createElement('div');
+primaryActions.style.cssText = 'display:flex;gap:8px;align-items:center;margin:0 0 12px;';
+panel.appendChild(primaryActions);
+
+const diagnostics = document.createElement('details');
+diagnostics.style.cssText = 'border-top:1px solid #252936;padding-top:12px;';
+const diagnosticsLabel = document.createElement('summary');
+diagnosticsLabel.textContent = 'Diagnostics';
+diagnosticsLabel.style.cssText = 'cursor:pointer;color:#e8b873;font:600 13px system-ui,sans-serif;margin-bottom:10px;';
+const probeActions = document.createElement('div');
+probeActions.style.cssText = 'display:flex;flex-wrap:wrap;gap:8px;margin:0 0 12px;';
+diagnostics.append(diagnosticsLabel, probeActions);
+panel.appendChild(diagnostics);
+
 const runButton = document.createElement('button');
 runButton.textContent = 'run CPU reference probe';
 runButton.style.cssText =
   'background:#e8b873;color:#101114;border:0;border-radius:6px;padding:8px 10px;cursor:pointer;font:600 13px system-ui,sans-serif;';
-panel.appendChild(runButton);
+probeActions.appendChild(runButton);
 
 const gpuButton = document.createElement('button');
 gpuButton.textContent = 'run WebGPU readback echo';
 gpuButton.style.cssText =
   'background:#2f3442;color:#e6eaf4;border:1px solid #4a5060;border-radius:6px;padding:8px 10px;' +
-  'cursor:pointer;font:600 13px system-ui,sans-serif;margin-left:8px;';
-panel.appendChild(gpuButton);
+  'cursor:pointer;font:600 13px system-ui,sans-serif;';
+probeActions.appendChild(gpuButton);
 
 const metricButton = document.createElement('button');
 metricButton.textContent = 'run WebGPU metric probe';
 metricButton.style.cssText =
   'background:#2f3442;color:#e6eaf4;border:1px solid #4a5060;border-radius:6px;padding:8px 10px;' +
-  'cursor:pointer;font:600 13px system-ui,sans-serif;margin:8px 0 0 0;';
-panel.appendChild(metricButton);
+  'cursor:pointer;font:600 13px system-ui,sans-serif;';
+probeActions.appendChild(metricButton);
 
 const hamiltonianButton = document.createElement('button');
 hamiltonianButton.textContent = 'run WebGPU Hamiltonian probe';
 hamiltonianButton.style.cssText =
   'background:#2f3442;color:#e6eaf4;border:1px solid #4a5060;border-radius:6px;padding:8px 10px;' +
-  'cursor:pointer;font:600 13px system-ui,sans-serif;margin:8px 0 0 8px;';
-panel.appendChild(hamiltonianButton);
+  'cursor:pointer;font:600 13px system-ui,sans-serif;';
+probeActions.appendChild(hamiltonianButton);
 
 const stepButton = document.createElement('button');
 stepButton.textContent = 'run WebGPU step probe';
 stepButton.style.cssText =
   'background:#2f3442;color:#e6eaf4;border:1px solid #4a5060;border-radius:6px;padding:8px 10px;' +
-  'cursor:pointer;font:600 13px system-ui,sans-serif;margin:8px 0 0 0;';
-panel.appendChild(stepButton);
+  'cursor:pointer;font:600 13px system-ui,sans-serif;';
+probeActions.appendChild(stepButton);
 
 const traceButton = document.createElement('button');
 traceButton.textContent = 'run WebGPU trace probe';
 traceButton.style.cssText =
   'background:#2f3442;color:#e6eaf4;border:1px solid #4a5060;border-radius:6px;padding:8px 10px;' +
-  'cursor:pointer;font:600 13px system-ui,sans-serif;margin:8px 0 0 8px;';
-panel.appendChild(traceButton);
+  'cursor:pointer;font:600 13px system-ui,sans-serif;';
+probeActions.appendChild(traceButton);
 
 const diskButton = document.createElement('button');
 diskButton.textContent = 'run WebGPU disk probe';
 diskButton.style.cssText =
   'background:#2f3442;color:#e6eaf4;border:1px solid #4a5060;border-radius:6px;padding:8px 10px;' +
-  'cursor:pointer;font:600 13px system-ui,sans-serif;margin:8px 0 0 0;';
-panel.appendChild(diskButton);
+  'cursor:pointer;font:600 13px system-ui,sans-serif;';
+probeActions.appendChild(diskButton);
 
 const radianceButton = document.createElement('button');
 radianceButton.textContent = 'run WebGPU radiance probe';
 radianceButton.style.cssText =
   'background:#2f3442;color:#e6eaf4;border:1px solid #4a5060;border-radius:6px;padding:8px 10px;' +
-  'cursor:pointer;font:600 13px system-ui,sans-serif;margin:8px 0 0 8px;';
-panel.appendChild(radianceButton);
+  'cursor:pointer;font:600 13px system-ui,sans-serif;';
+probeActions.appendChild(radianceButton);
 
 const cameraSampleButton = document.createElement('button');
 cameraSampleButton.textContent = 'run WebGPU camera sample probe';
 cameraSampleButton.style.cssText =
   'background:#2f3442;color:#e6eaf4;border:1px solid #4a5060;border-radius:6px;padding:8px 10px;' +
-  'cursor:pointer;font:600 13px system-ui,sans-serif;margin:8px 0 0 0;';
-panel.appendChild(cameraSampleButton);
+  'cursor:pointer;font:600 13px system-ui,sans-serif;';
+probeActions.appendChild(cameraSampleButton);
 
 const compositeButton = document.createElement('button');
 compositeButton.textContent = 'run WebGPU composite probe';
 compositeButton.style.cssText =
   'background:#2f3442;color:#e6eaf4;border:1px solid #4a5060;border-radius:6px;padding:8px 10px;' +
-  'cursor:pointer;font:600 13px system-ui,sans-serif;margin:8px 0 0 8px;';
-panel.appendChild(compositeButton);
+  'cursor:pointer;font:600 13px system-ui,sans-serif;';
+probeActions.appendChild(compositeButton);
 
 const previewButton = document.createElement('button');
 previewButton.textContent = 'render WebGPU view';
 previewButton.style.cssText =
   'background:#e8b873;color:#101114;border:0;border-radius:6px;padding:8px 10px;' +
-  'cursor:pointer;font:600 13px system-ui,sans-serif;margin:8px 0 0 8px;';
-panel.appendChild(previewButton);
+  'cursor:pointer;font:600 13px system-ui,sans-serif;';
+primaryActions.appendChild(previewButton);
 
 const summary = document.createElement('pre');
-summary.style.cssText = 'white-space:pre-wrap;margin:14px 0 0;color:#d7dbe5;';
-panel.appendChild(summary);
+summary.style.cssText = 'white-space:pre-wrap;margin:0;color:#d7dbe5;';
+diagnostics.appendChild(summary);
+
+const previewTitle = document.createElement('h2');
+previewTitle.textContent = 'Live WebGPU Preview';
+previewTitle.style.cssText = 'font:600 15px system-ui,sans-serif;margin:0 0 8px;color:#fff;';
+output.appendChild(previewTitle);
+
+const previewReadout = document.createElement('div');
+previewReadout.textContent = 'Rendering...';
+previewReadout.style.cssText = 'color:#aeb5c5;margin:0 0 10px;white-space:pre-wrap;';
+output.appendChild(previewReadout);
 
 const previewCanvas = document.createElement('canvas');
 previewCanvas.width = 128;
@@ -204,8 +228,8 @@ previewCanvas.style.cssText =
 output.appendChild(previewCanvas);
 
 const table = document.createElement('pre');
-table.style.cssText = 'white-space:pre;tab-size:2;margin:0;color:#cbd1df;';
-output.appendChild(table);
+table.style.cssText = 'white-space:pre;tab-size:2;margin:12px 0 0;color:#cbd1df;overflow:auto;';
+diagnostics.appendChild(table);
 
 let latestReadback: Float32Array<ArrayBufferLike> = new Float32Array();
 let previewRenderTimer: number | undefined;
@@ -512,23 +536,25 @@ async function renderGpuPreview() {
     const result = await renderWebGpuCompositeFromCameraToCanvas(options, previewCanvas);
     if (!result.supported || !result.output) {
       setSummaryLine('gpu preview', result.message);
+      previewReadout.textContent = result.message;
       return;
     }
     const rows = compositeOutputRows(result.output);
     const diskHits = rows.filter((row) => row.status === ReadbackStatus.Disk).length;
     const horizons = rows.filter((row) => row.status === ReadbackStatus.Horizon).length;
     const maxDrift = Math.max(...rows.map((row) => row.drift));
-    setSummaryLine(
-      'gpu preview',
-      `${width} x ${height}, spin ${options.params.spin.toFixed(2)}, ` +
-        `r ${options.position.x.toFixed(2)}, z ${options.position.z.toFixed(2)}, ` +
-        `yaw ${yawInput.input.value}, pitch ${pitchInput.input.value}, ` +
-        `disk ${options.disk.innerRadius.toFixed(1)}-${options.disk.outerRadius.toFixed(1)}, ` +
-        `temp ${options.radianceModel.innerTemperature.toFixed(0)}, ` +
-        `disk hits ${diskHits}, horizons ${horizons}, max drift ${maxDrift.toExponential(3)}`,
-    );
+    const previewLine = `${width} x ${height}, spin ${options.params.spin.toFixed(2)}, ` +
+      `r ${options.position.x.toFixed(2)}, z ${options.position.z.toFixed(2)}, ` +
+      `yaw ${yawInput.input.value}, pitch ${pitchInput.input.value}, ` +
+      `disk ${options.disk.innerRadius.toFixed(1)}-${options.disk.outerRadius.toFixed(1)}, ` +
+      `temp ${options.radianceModel.innerTemperature.toFixed(0)}, ` +
+      `disk hits ${diskHits}, horizons ${horizons}, max drift ${maxDrift.toExponential(3)}`;
+    previewReadout.textContent = previewLine;
+    setSummaryLine('gpu preview', previewLine);
   } catch (error) {
-    setSummaryLine('gpu preview', `failed (${errorMessage(error)})`);
+    const message = `failed (${errorMessage(error)})`;
+    previewReadout.textContent = message;
+    setSummaryLine('gpu preview', message);
   } finally {
     previewButton.textContent = 'render WebGPU view';
     previewButton.removeAttribute('disabled');
