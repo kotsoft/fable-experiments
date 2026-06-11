@@ -9,9 +9,10 @@ import {
 import { refineDiskCrossing, type ThinDisk } from '../gr/disk';
 import { horizonRadius, kerrSchildNullSpatial, kerrSchildParams, kerrSchildRadius, kerrSchildScalar, type Vec4 } from '../gr/kerrSchild';
 import { sampleDiskRadiance, type DiskRadianceModel } from '../gr/radiance';
-import { probeGridToReadback, READBACK_FLOATS_PER_RAY, ReadbackStatus } from '../gr/readback';
+import { probeGridToReadback, READBACK_FLOATS_PER_RAY, ReadbackStatus, statusToReadback } from '../gr/readback';
 import { renderProbeGrid, type ProbeGrid } from '../gr/referenceProbe';
-import { buildObserverTetrad, staticObserverFourVelocity } from '../gr/tetrad';
+import { buildObserverTetrad, launchPhotonFromTetrad, staticObserverFourVelocity } from '../gr/tetrad';
+import { runWebGpuCompositeProbe } from './webgpuCompositeProbe';
 import { runWebGpuHamiltonianProbe } from './webgpuHamiltonianProbe';
 import { runWebGpuDiskProbe } from './webgpuDiskProbe';
 import { runWebGpuMetricProbe } from './webgpuMetricProbe';
@@ -105,6 +106,13 @@ radianceButton.style.cssText =
   'cursor:pointer;font:600 13px system-ui,sans-serif;margin:8px 0 0 8px;';
 panel.appendChild(radianceButton);
 
+const compositeButton = document.createElement('button');
+compositeButton.textContent = 'run WebGPU composite probe';
+compositeButton.style.cssText =
+  'background:#2f3442;color:#e6eaf4;border:1px solid #4a5060;border-radius:6px;padding:8px 10px;' +
+  'cursor:pointer;font:600 13px system-ui,sans-serif;margin:8px 0 0 0;';
+panel.appendChild(compositeButton);
+
 const summary = document.createElement('pre');
 summary.style.cssText = 'white-space:pre-wrap;margin:14px 0 0;color:#d7dbe5;';
 panel.appendChild(summary);
@@ -138,6 +146,9 @@ diskButton.addEventListener('click', () => {
 });
 radianceButton.addEventListener('click', () => {
   void runGpuRadianceProbe();
+});
+compositeButton.addEventListener('click', () => {
+  void runGpuCompositeProbe();
 });
 
 async function detectWebGpu() {
@@ -177,7 +188,8 @@ function renderCpuProbe() {
     'gpu step: not run\n' +
     'gpu trace: not run\n' +
     'gpu disk: not run\n' +
-    'gpu radiance: not run';
+    'gpu radiance: not run\n' +
+    'gpu composite: not run';
 
   table.textContent = [
     'px py status steps radius drift diskR redshift intensity rgb',
@@ -326,6 +338,26 @@ async function runGpuRadianceProbe() {
   } finally {
     radianceButton.textContent = 'run WebGPU radiance probe';
     radianceButton.removeAttribute('disabled');
+  }
+}
+
+async function runGpuCompositeProbe() {
+  const { samples, expected } = createCompositeProbeBuffers();
+  compositeButton.textContent = 'running WebGPU composite probe...';
+  compositeButton.setAttribute('disabled', 'true');
+  try {
+    const result = await runWebGpuCompositeProbe(samples, expected);
+    const detail = result.output ? compositeProbeDetail(expected, result.output) : '';
+    const compositeLine = result.supported
+      ? `max diff ${(result.maxAbsDiff ?? Number.NaN).toExponential(3)}, ` +
+        `status mismatches ${result.statusMismatches ?? 0}, disk mismatches ${result.diskMismatches ?? 0}${detail}`
+      : result.message;
+    setSummaryLine('gpu composite', compositeLine);
+  } catch (error) {
+    setSummaryLine('gpu composite', `failed (${errorMessage(error)})`);
+  } finally {
+    compositeButton.textContent = 'run WebGPU composite probe';
+    compositeButton.removeAttribute('disabled');
   }
 }
 
@@ -674,6 +706,80 @@ function createRadianceProbeBuffers(): { samples: Float32Array; expected: Float3
   return { samples, expected };
 }
 
+function createCompositeProbeBuffers(): { samples: Float32Array; expected: Float32Array } {
+  const params = kerrSchildParams(0.55, 1);
+  const position = { x: 10, y: 0, z: 3 };
+  const observerVelocity = staticObserverFourVelocity(position, params);
+  const tetrad = buildObserverTetrad(position, params, observerVelocity);
+  const traceOptions = {
+    stepSize: 0.04,
+    maxSteps: 520,
+    escapeRadius: 32,
+    singularityRadius: 0.2,
+  };
+  const disk = { innerRadius: 3, outerRadius: 18 };
+  const radianceModel = {
+    innerRadius: 3,
+    outerRadius: 18,
+    innerTemperature: 7200,
+    emissivityScale: 1,
+    boostPower: 4,
+  };
+  const grid = renderProbeGrid(
+    params,
+    { position, tetrad, verticalFovRadians: 0.82 },
+    5,
+    3,
+    traceOptions,
+    disk,
+    radianceModel,
+  );
+  const samples = new Float32Array(grid.rays.length * 28);
+  const expected = new Float32Array(grid.rays.length * 8);
+  grid.rays.forEach((ray, index) => {
+    const momentum = launchPhotonFromTetrad(position, params, tetrad, ray.localDirection);
+    const sampleBase = index * 28;
+    const expectedBase = index * 8;
+    samples[sampleBase] = 0;
+    samples[sampleBase + 1] = position.x;
+    samples[sampleBase + 2] = position.y;
+    samples[sampleBase + 3] = position.z;
+    samples[sampleBase + 4] = momentum.t;
+    samples[sampleBase + 5] = momentum.x;
+    samples[sampleBase + 6] = momentum.y;
+    samples[sampleBase + 7] = momentum.z;
+    samples[sampleBase + 8] = observerVelocity.t;
+    samples[sampleBase + 9] = observerVelocity.x;
+    samples[sampleBase + 10] = observerVelocity.y;
+    samples[sampleBase + 11] = observerVelocity.z;
+    samples[sampleBase + 12] = params.spin;
+    samples[sampleBase + 13] = traceOptions.stepSize;
+    samples[sampleBase + 14] = traceOptions.escapeRadius;
+    samples[sampleBase + 15] = traceOptions.singularityRadius;
+    samples[sampleBase + 16] = traceOptions.maxSteps;
+    samples[sampleBase + 17] = params.mass;
+    samples[sampleBase + 18] = 0;
+    samples[sampleBase + 19] = 0;
+    samples[sampleBase + 20] = disk.innerRadius;
+    samples[sampleBase + 21] = disk.outerRadius;
+    samples[sampleBase + 22] = radianceModel.innerTemperature;
+    samples[sampleBase + 23] = radianceModel.emissivityScale;
+    samples[sampleBase + 24] = radianceModel.boostPower;
+    samples[sampleBase + 25] = 1;
+    samples[sampleBase + 26] = 0;
+    samples[sampleBase + 27] = 0;
+    expected[expectedBase] = statusToReadback(ray.status);
+    expected[expectedBase + 1] = ray.steps;
+    expected[expectedBase + 2] = ray.finalRadius;
+    expected[expectedBase + 3] = ray.diskHit?.radius ?? -1;
+    expected[expectedBase + 4] = ray.color[0];
+    expected[expectedBase + 5] = ray.color[1];
+    expected[expectedBase + 6] = ray.color[2];
+    expected[expectedBase + 7] = ray.maxHamiltonianDrift;
+  });
+  return { samples, expected };
+}
+
 function readbackRows(readback: Float32Array) {
   const rows = [];
   for (let i = 0; i < readback.length; i += READBACK_FLOATS_PER_RAY) {
@@ -756,6 +862,24 @@ function radianceProbeDetail(expected: Float32Array<ArrayBufferLike>, output: Fl
     }
   }
   return max > 1e-2 ? `, max row ${offset / 8} expected [${formatVecN(expected, offset, 8)}] got [${formatVecN(output, offset, 8)}]` : '';
+}
+
+function compositeProbeDetail(expected: Float32Array<ArrayBufferLike>, output: Float32Array<ArrayBufferLike>): string {
+  for (let i = 0; i < expected.length; i += 8) {
+    if (Math.round(expected[i]) !== Math.round(output[i])) {
+      return `, row ${i / 8} expected [${formatVecN(expected, i, 8)}] got [${formatVecN(output, i, 8)}]`;
+    }
+  }
+  let max = 0;
+  let offset = 0;
+  for (let i = 0; i < expected.length; i++) {
+    const diff = Math.abs(expected[i] - output[i]);
+    if (diff > max) {
+      max = diff;
+      offset = i - i % 8;
+    }
+  }
+  return max > 5e-2 ? `, max row ${offset / 8} expected [${formatVecN(expected, offset, 8)}] got [${formatVecN(output, offset, 8)}]` : '';
 }
 
 function formatVecN(values: Float32Array<ArrayBufferLike>, offset: number, length: number): string {
