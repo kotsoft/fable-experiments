@@ -180,6 +180,9 @@ table.style.cssText = 'white-space:pre;tab-size:2;margin:0;color:#cbd1df;';
 output.appendChild(table);
 
 let latestReadback: Float32Array<ArrayBufferLike> = new Float32Array();
+let previewRenderTimer: number | undefined;
+let isPreviewRendering = false;
+let hasPendingPreviewRender = false;
 
 void detectWebGpu();
 renderCpuProbe();
@@ -214,6 +217,16 @@ compositeButton.addEventListener('click', () => {
 previewButton.addEventListener('click', () => {
   void renderGpuPreview();
 });
+[
+  spinInput.input,
+  radiusInput.input,
+  heightInput.input,
+  fovInput.input,
+].forEach((input) => {
+  input.addEventListener('input', () => scheduleGpuPreviewRender());
+});
+resolutionSelect.addEventListener('change', () => scheduleGpuPreviewRender(0));
+scheduleGpuPreviewRender(80);
 
 async function detectWebGpu() {
   const gpu = (navigator as GpuNavigator).gpu;
@@ -448,6 +461,12 @@ async function runGpuCompositeProbe() {
 }
 
 async function renderGpuPreview() {
+  if (isPreviewRendering) {
+    hasPendingPreviewRender = true;
+    return;
+  }
+  isPreviewRendering = true;
+  hasPendingPreviewRender = false;
   const { width, height } = selectedResolution();
   const options = createCompositeCameraOptions(width, height);
   previewButton.textContent = 'rendering WebGPU view...';
@@ -473,7 +492,21 @@ async function renderGpuPreview() {
   } finally {
     previewButton.textContent = 'render WebGPU view';
     previewButton.removeAttribute('disabled');
+    isPreviewRendering = false;
+    if (hasPendingPreviewRender) {
+      scheduleGpuPreviewRender(0);
+    }
   }
+}
+
+function scheduleGpuPreviewRender(delay = 220): void {
+  if (previewRenderTimer !== undefined) {
+    window.clearTimeout(previewRenderTimer);
+  }
+  previewRenderTimer = window.setTimeout(() => {
+    previewRenderTimer = undefined;
+    void renderGpuPreview();
+  }, delay);
 }
 
 function createReferenceGrid(): ProbeGrid {
