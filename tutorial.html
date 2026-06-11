@@ -65,6 +65,21 @@
       .controls input[type="range"] { flex: 1; accent-color: var(--accent); }
       .controls output { min-width: 13rem; color: var(--fg); font-variant-numeric: tabular-nums; }
       .note { font-size: 0.88rem; color: var(--dim); border-left: 2px solid var(--line); padding-left: 0.9rem; }
+      details {
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        padding: 0 1rem;
+        margin: 1.3rem 0;
+        background: #0e1016;
+      }
+      details summary {
+        cursor: pointer;
+        padding: 0.7rem 0;
+        color: var(--accent);
+        font-size: 0.95rem;
+      }
+      details summary:hover { color: #f4cd96; }
+      details[open] summary { border-bottom: 1px solid var(--line); }
     </style>
   </head>
   <body>
@@ -92,8 +107,56 @@
       </p>
 
       <h2>2 — How light bends</h2>
+      <p>Photons follow <em>null geodesics</em> of that metric.</p>
+
+      <details>
+        <summary>New to this? What's a geodesic, and why "null"?</summary>
+        <p>
+          A <strong>geodesic</strong> is the straightest possible path through a space. On a flat
+          sheet of paper that's an ordinary straight line. But on a curved surface, "go straight
+          ahead and never turn" produces something that <em>looks</em> bent from the outside. This
+          is why long flights take those strange-looking arcs on a flat map: the great-circle route
+          over the globe is the actual straight line; the map is what's lying.
+        </p>
+        <p>
+          Here is the part that makes gravity click. Imagine two ants on a ball, starting a little
+          apart on the equator, both walking perfectly straight "north" — neither ever steers. They
+          start out parallel, yet they drift together and collide at the pole:
+        </p>
+        <figure>
+          <canvas id="geoSphere" width="1280" height="720"></canvas>
+          <figcaption>
+            Two perfectly straight paths on a curved surface converge — no force pulled the ants
+            together. The shape of the surface did it.
+          </figcaption>
+        </figure>
+        <p>
+          Einstein's idea was that gravity works the same way. A mass like a black hole curves the
+          space (and time) around it, and everything — planets, spaceships, light — just keeps
+          going "straight ahead" through that curved geometry. Nothing tugs on a photon; the photon
+          never turns. The road itself is bent:
+        </p>
+        <figure>
+          <canvas id="geoGrid" width="1280" height="720"></canvas>
+          <figcaption>
+            The same ray of light with identical "go straight ahead" instructions, in flat space
+            (dashed) and in the curved space around a black hole (solid, computed with this page's
+            integrator). The warped grid is an artist's sketch of how distances stretch near the
+            mass.
+          </figcaption>
+        </figure>
+        <p>
+          And <strong>"null"</strong>? In relativity, the "distance" between two events mixes space
+          and time, and it has a quirk: along anything moving at exactly the speed of light, that
+          spacetime distance works out to <em>zero</em>. Physicists call such paths null. So "null
+          geodesic" is just compact jargon for: <em>the straightest possible path, traveled at the
+          speed of light</em> — in other words, the route a ray of light takes. That's all the
+          renderer computes, once per pixel.
+        </p>
+      </details>
+
       <p>
-        Photons follow null geodesics of that metric. Every geodesic stays in a single plane, and in
+        Every geodesic stays in a single plane, and in
         that plane, writing <var>u</var> = 1/<var>r</var> as a function of the angle <var>φ</var>,
         the orbit equation (the relativistic Binet equation) is:
       </p>

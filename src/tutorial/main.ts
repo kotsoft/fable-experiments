@@ -254,6 +254,186 @@ slider.addEventListener('input', update);
 update();
 
 // ============================================================
+// Diagram E (geodesic primer): two "straight" paths on a sphere
+// ============================================================
+{
+  const g = ctx2d('geoSphere');
+  const W = 1280, H = 720;
+  const cx = W / 2, cy = H / 2 + 40, R = 290;
+  const tilt = (28 * Math.PI) / 180; // tip the pole toward the viewer
+  g.clearRect(0, 0, W, H);
+
+  // lat/lon (radians) -> screen point + depth; visible when depth > 0
+  const proj = (lat: number, lon: number) => {
+    const x = Math.cos(lat) * Math.sin(lon);
+    const y = Math.sin(lat);
+    const z = Math.cos(lat) * Math.cos(lon);
+    return {
+      sx: cx + R * x,
+      sy: cy - R * (y * Math.cos(tilt) - z * Math.sin(tilt)),
+      d: y * Math.sin(tilt) + z * Math.cos(tilt),
+    };
+  };
+
+  const strokeCurve = (pts: { sx: number; sy: number; d: number }[]) => {
+    let started = false;
+    g.beginPath();
+    for (const p of pts) {
+      if (p.d <= 0.02) { started = false; continue; }
+      if (!started) { g.moveTo(p.sx, p.sy); started = true; }
+      else g.lineTo(p.sx, p.sy);
+    }
+    g.stroke();
+  };
+  const sample = (f: (t: number) => { sx: number; sy: number; d: number }) => {
+    const pts = [];
+    for (let i = 0; i <= 120; i++) pts.push(f(i / 120));
+    return pts;
+  };
+
+  // sphere outline
+  g.beginPath();
+  g.arc(cx, cy, R, 0, Math.PI * 2);
+  g.strokeStyle = '#3a3f4a';
+  g.lineWidth = 1.5;
+  g.stroke();
+
+  // faint graticule
+  g.strokeStyle = '#23262e';
+  g.lineWidth = 1;
+  for (const latDeg of [-30, 30, 60]) {
+    const lat = (latDeg * Math.PI) / 180;
+    strokeCurve(sample((t) => proj(lat, -Math.PI + t * 2 * Math.PI)));
+  }
+  for (let lonDeg = -90; lonDeg <= 90; lonDeg += 30) {
+    const lon = (lonDeg * Math.PI) / 180;
+    strokeCurve(sample((t) => proj(-Math.PI / 2 + t * Math.PI, lon)));
+  }
+  // equator, slightly brighter
+  g.strokeStyle = '#363b47';
+  strokeCurve(sample((t) => proj(0, -Math.PI + t * 2 * Math.PI)));
+
+  // the two ant paths: meridians from the equator to the pole
+  g.strokeStyle = CSS.accent;
+  g.lineWidth = 3;
+  for (const lonDeg of [-26, 26]) {
+    const lon = (lonDeg * Math.PI) / 180;
+    strokeCurve(sample((t) => proj(t * Math.PI / 2, lon)));
+    // start dot + arrowhead pointing "north" along the path
+    const a = proj(0, lon), b = proj(0.16, lon);
+    g.fillStyle = CSS.accent;
+    g.beginPath();
+    g.arc(a.sx, a.sy, 7, 0, Math.PI * 2);
+    g.fill();
+    const dx = b.sx - a.sx, dy = b.sy - a.sy;
+    const l = Math.hypot(dx, dy), ux = dx / l, uy = dy / l;
+    const tipx = a.sx + ux * 52, tipy = a.sy + uy * 52;
+    g.beginPath();
+    g.moveTo(tipx + ux * 14, tipy + uy * 14);
+    g.lineTo(tipx - uy * 8, tipy + ux * 8);
+    g.lineTo(tipx + uy * 8, tipy - ux * 8);
+    g.closePath();
+    g.fill();
+  }
+
+  // meeting point at the pole
+  const pole = proj(Math.PI / 2, 0);
+  g.beginPath();
+  g.arc(pole.sx, pole.sy, 8, 0, Math.PI * 2);
+  g.fillStyle = '#fff';
+  g.fill();
+
+  g.font = '22px system-ui';
+  g.textAlign = 'center';
+  g.fillStyle = CSS.dim;
+  const s1 = proj(0, (-26 * Math.PI) / 180), s2 = proj(0, (26 * Math.PI) / 180);
+  g.fillText('start parallel, walk straight, never turn', (s1.sx + s2.sx) / 2, Math.max(s1.sy, s2.sy) + 56);
+  g.fillStyle = '#fff';
+  g.fillText('…and still meet', pole.sx, pole.sy - 26);
+}
+
+// ============================================================
+// Diagram F (geodesic primer): same ray, flat vs curved space
+// ============================================================
+{
+  const g = ctx2d('geoGrid');
+  const W = 1280, H = 720;
+  const v: View = { cx: W / 2, cy: H / 2, scale: W / 26 };
+  g.clearRect(0, 0, W, H);
+
+  // illustrative warped grid: points pulled inward near the mass
+  const warp = (x: number, y: number) => {
+    const r = Math.hypot(x, y);
+    const s = 1 - 1.15 / (r + 1.5);
+    return { x: x * s, y: y * s };
+  };
+  g.strokeStyle = '#1d212b';
+  g.lineWidth = 1;
+  for (let gx = -12; gx <= 12; gx += 2) {
+    g.beginPath();
+    for (let y = -7; y <= 7; y += 0.2) {
+      const p = warp(gx, y);
+      const sx = v.cx + p.x * v.scale, sy = v.cy - p.y * v.scale;
+      if (y === -7) g.moveTo(sx, sy); else g.lineTo(sx, sy);
+    }
+    g.stroke();
+  }
+  for (let gy = -6; gy <= 6; gy += 2) {
+    g.beginPath();
+    for (let x = -12; x <= 12; x += 0.2) {
+      const p = warp(x, gy);
+      const sx = v.cx + p.x * v.scale, sy = v.cy - p.y * v.scale;
+      if (x === -12) g.moveTo(sx, sy); else g.lineTo(sx, sy);
+    }
+    g.stroke();
+  }
+
+  const b = 3.4; // impact parameter for both rays
+
+  // flat space: a straight line
+  g.strokeStyle = CSS.dim;
+  g.lineWidth = 2;
+  g.setLineDash([8, 8]);
+  g.beginPath();
+  g.moveTo(v.cx + 12 * v.scale, v.cy - b * v.scale);
+  g.lineTo(v.cx - 12 * v.scale, v.cy - b * v.scale);
+  g.stroke();
+  g.setLineDash([]);
+
+  // curved space: the real geodesic, same start, same direction
+  const ray = traceRay(12, b, -1, 0, 26);
+  g.strokeStyle = CSS.accent;
+  g.lineWidth = 3;
+  drawPath(g, v, ray.pts);
+
+  // the mass
+  g.beginPath();
+  g.arc(v.cx, v.cy, v.scale, 0, Math.PI * 2);
+  g.fillStyle = '#000';
+  g.fill();
+  g.strokeStyle = '#3a3f4a';
+  g.lineWidth = 1.5;
+  g.stroke();
+
+  // shared start marker
+  g.beginPath();
+  g.arc(v.cx + 12 * v.scale, v.cy - b * v.scale, 6, 0, Math.PI * 2);
+  g.fillStyle = '#fff';
+  g.fill();
+
+  g.font = '22px system-ui';
+  g.fillStyle = CSS.dim;
+  g.textAlign = 'right';
+  g.fillText('flat space: straight ahead stays straight', v.cx - 3 * v.scale, v.cy - (b + 0.7) * v.scale);
+  g.fillStyle = CSS.accent;
+  g.textAlign = 'left';
+  g.fillText('curved space: same instructions', v.cx - 11.5 * v.scale, v.cy + 5.0 * v.scale);
+  g.fillStyle = '#fff';
+  g.textAlign = 'left';
+  g.fillText('light starts here →', v.cx + 8.2 * v.scale, v.cy - (b + 0.7) * v.scale);
+}
+
+// ============================================================
 // Diagram C: side view — how the disk images form
 // ============================================================
 {
