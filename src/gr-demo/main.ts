@@ -12,6 +12,11 @@ import { sampleDiskRadiance, type DiskRadianceModel } from '../gr/radiance';
 import { probeGridToReadback, READBACK_FLOATS_PER_RAY, ReadbackStatus, statusToReadback } from '../gr/readback';
 import { renderProbeGrid, type ProbeGrid } from '../gr/referenceProbe';
 import { buildObserverTetrad, launchPhotonFromTetrad, staticObserverFourVelocity } from '../gr/tetrad';
+import {
+  COMPOSITE_OUTPUT_FLOATS_PER_RAY,
+  compositeOutputRows,
+  compositeProbeDetail,
+} from '../gr/compositeReadback';
 import { runWebGpuComposite, runWebGpuCompositeProbe } from './webgpuCompositeProbe';
 import { runWebGpuHamiltonianProbe } from './webgpuHamiltonianProbe';
 import { runWebGpuDiskProbe } from './webgpuDiskProbe';
@@ -393,7 +398,7 @@ async function renderGpuPreview() {
       return;
     }
     drawCompositePreview(previewCanvas, width, height, result.output);
-    const rows = compositeRows(result.output);
+    const rows = compositeOutputRows(result.output);
     const diskHits = rows.filter((row) => row.status === ReadbackStatus.Disk).length;
     const horizons = rows.filter((row) => row.status === ReadbackStatus.Horizon).length;
     const maxDrift = Math.max(...rows.map((row) => row.drift));
@@ -975,24 +980,6 @@ function radianceProbeDetail(expected: Float32Array<ArrayBufferLike>, output: Fl
   return max > 1e-2 ? `, max row ${offset / 8} expected [${formatVecN(expected, offset, 8)}] got [${formatVecN(output, offset, 8)}]` : '';
 }
 
-function compositeProbeDetail(expected: Float32Array<ArrayBufferLike>, output: Float32Array<ArrayBufferLike>): string {
-  for (let i = 0; i < expected.length; i += 8) {
-    if (Math.round(expected[i]) !== Math.round(output[i])) {
-      return `, row ${i / 8} expected [${formatVecN(expected, i, 8)}] got [${formatVecN(output, i, 8)}]`;
-    }
-  }
-  let max = 0;
-  let offset = 0;
-  for (let i = 0; i < expected.length; i++) {
-    const diff = Math.abs(expected[i] - output[i]);
-    if (diff > max) {
-      max = diff;
-      offset = i - i % 8;
-    }
-  }
-  return max > 5e-2 ? `, max row ${offset / 8} expected [${formatVecN(expected, offset, 8)}] got [${formatVecN(output, offset, 8)}]` : '';
-}
-
 function formatVecN(values: Float32Array<ArrayBufferLike>, offset: number, length: number): string {
   return Array.from({ length }, (_, i) => values[offset + i].toPrecision(4)).join(', ');
 }
@@ -1009,7 +996,7 @@ function drawCompositePreview(
   if (!context) return;
   const image = context.createImageData(width, height);
   for (let i = 0; i < width * height; i++) {
-    const row = i * 8;
+    const row = i * COMPOSITE_OUTPUT_FLOATS_PER_RAY;
     const pixel = i * 4;
     image.data[pixel] = toDisplayByte(output[row + 4]);
     image.data[pixel + 1] = toDisplayByte(output[row + 5]);
@@ -1022,21 +1009,6 @@ function drawCompositePreview(
 function toDisplayByte(value: number): number {
   const mapped = Math.max(0, value) / (1 + Math.max(0, value));
   return Math.round(Math.pow(mapped, 1 / 2.2) * 255);
-}
-
-function compositeRows(output: Float32Array<ArrayBufferLike>) {
-  const rows = [];
-  for (let i = 0; i < output.length; i += 8) {
-    rows.push({
-      status: output[i],
-      steps: output[i + 1],
-      radius: output[i + 2],
-      diskRadius: output[i + 3],
-      color: [output[i + 4], output[i + 5], output[i + 6]],
-      drift: output[i + 7],
-    });
-  }
-  return rows;
 }
 
 function normalize3(v: { x: number; y: number; z: number }) {

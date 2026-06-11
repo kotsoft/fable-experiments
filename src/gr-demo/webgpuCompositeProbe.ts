@@ -1,3 +1,9 @@
+import {
+  compareCompositeReadback,
+  compositeOutputByteLength,
+  compositeRayCount,
+} from '../gr/compositeReadback';
+
 export interface WebGpuCompositeProbeResult {
   supported: boolean;
   message: string;
@@ -362,14 +368,15 @@ export async function runWebGpuCompositeProbe(
   if (!raw.supported || !raw.output) {
     return { supported: raw.supported, message: raw.message };
   }
+  const comparison = compareCompositeReadback(expectedCopy, raw.output);
 
   return {
     supported: true,
     message: 'WebGPU composite probe matched CPU reference',
     output: raw.output,
-    maxAbsDiff: maxAbsDiff(expectedCopy, raw.output),
-    statusMismatches: mismatchCount(expectedCopy, raw.output, 8, 0),
-    diskMismatches: mismatchCount(expectedCopy, raw.output, 8, 3),
+    maxAbsDiff: comparison.maxAbsDiff,
+    statusMismatches: comparison.statusMismatches,
+    diskMismatches: comparison.diskMismatches,
   };
 }
 
@@ -384,7 +391,11 @@ export async function runWebGpuComposite(
   }
 
   const inputCopy = new Float32Array(samples);
-  const outputByteLength = inputCopy.length / 28 * 8 * Float32Array.BYTES_PER_ELEMENT;
+  const rayCount = compositeRayCount(inputCopy);
+  if (!Number.isInteger(rayCount)) {
+    return { supported: false, message: 'Composite sample buffer has an invalid ray stride' };
+  }
+  const outputByteLength = compositeOutputByteLength(inputCopy);
   const adapter = await navigator.gpu.requestAdapter();
   if (!adapter) return { supported: false, message: 'No WebGPU adapter available' };
   const device = await adapter.requestDevice();
@@ -421,7 +432,7 @@ export async function runWebGpuComposite(
   const pass = encoder.beginComputePass();
   pass.setPipeline(pipeline);
   pass.setBindGroup(0, bindGroup);
-  pass.dispatchWorkgroups(Math.ceil(inputCopy.length / 28 / 64));
+  pass.dispatchWorkgroups(Math.ceil(rayCount / 64));
   pass.end();
   encoder.copyBufferToBuffer(output, 0, readback, 0, outputByteLength);
   device.queue.submit([encoder.finish()]);
@@ -435,20 +446,4 @@ export async function runWebGpuComposite(
     message: 'WebGPU composite renderer completed',
     output: outputCopy,
   };
-}
-
-function maxAbsDiff(a: Float32Array, b: Float32Array): number {
-  let max = 0;
-  for (let i = 0; i < a.length; i++) {
-    max = Math.max(max, Math.abs(a[i] - b[i]));
-  }
-  return max;
-}
-
-function mismatchCount(a: Float32Array, b: Float32Array, stride: number, offset: number): number {
-  let count = 0;
-  for (let i = offset; i < a.length; i += stride) {
-    if (Math.round(a[i]) !== Math.round(b[i])) count += 1;
-  }
-  return count;
 }
