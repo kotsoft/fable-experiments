@@ -1,0 +1,268 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>How the black hole is rendered</title>
+    <style>
+      :root {
+        --bg: #0b0c10;
+        --fg: #c9cdd6;
+        --dim: #7d8290;
+        --accent: #e8b873;
+        --line: #23262e;
+      }
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--fg);
+        font: 16px/1.65 system-ui, sans-serif;
+      }
+      main { max-width: 46rem; margin: 0 auto; padding: 3rem 1.25rem 6rem; }
+      h1 { font-size: 1.7rem; line-height: 1.25; color: #fff; }
+      h2 { font-size: 1.15rem; margin-top: 3rem; color: var(--accent); }
+      a { color: var(--accent); }
+      p { margin: 0.9rem 0; }
+      .eq {
+        text-align: center;
+        font-family: Georgia, 'Times New Roman', serif;
+        font-style: italic;
+        font-size: 1.12rem;
+        margin: 1.3rem 0;
+        color: #e8eaf0;
+      }
+      .eq sub, .eq sup { font-size: 0.72em; }
+      var { font-family: Georgia, serif; }
+      pre {
+        background: #11131a;
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        padding: 0.8rem 1rem;
+        overflow-x: auto;
+        font-size: 0.85rem;
+        line-height: 1.5;
+        color: #b8c4d8;
+      }
+      figure { margin: 1.6rem 0; }
+      figure canvas {
+        display: block;
+        width: 100%;
+        height: auto;
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        background: #07080c;
+      }
+      figcaption { font-size: 0.85rem; color: var(--dim); margin-top: 0.5rem; }
+      .controls {
+        display: flex;
+        align-items: center;
+        gap: 0.8rem;
+        margin: 0.8rem 0;
+        font-size: 0.9rem;
+        color: var(--dim);
+      }
+      .controls input[type="range"] { flex: 1; accent-color: var(--accent); }
+      .controls output { min-width: 13rem; color: var(--fg); font-variant-numeric: tabular-nums; }
+      .note { font-size: 0.88rem; color: var(--dim); border-left: 2px solid var(--line); padding-left: 0.9rem; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Rendering a black hole, the Interstellar way</h1>
+      <p>
+        The <a href="/">renderer</a> draws Gargantua's three signature features — the dark shadow,
+        the thin photon ring hugging it, and the accretion disk that seems to arc <em>over</em> the
+        hole — without modeling any of them directly. All three fall out of one thing: tracing light
+        rays through curved spacetime, per pixel, on the GPU. This page walks through the math it
+        actually runs.
+      </p>
+
+      <h2>1 — The spacetime</h2>
+      <p>
+        A non-rotating black hole of mass <var>M</var> is described by the Schwarzschild metric:
+      </p>
+      <p class="eq">
+        ds² = −(1 − r<sub>s</sub>/r) c²dt² + dr²/(1 − r<sub>s</sub>/r) + r²dΩ²
+      </p>
+      <p>
+        where <var>r<sub>s</sub></var> = 2<var>GM</var>/<var>c</var>² is the Schwarzschild radius —
+        the event horizon. The renderer works in units where <var>r<sub>s</sub></var> = 1 and
+        <var>c</var> = 1 (so <var>M</var> = ½), which makes every formula below pleasantly small.
+      </p>
+
+      <h2>2 — How light bends</h2>
+      <p>
+        Photons follow null geodesics of that metric. Every geodesic stays in a single plane, and in
+        that plane, writing <var>u</var> = 1/<var>r</var> as a function of the angle <var>φ</var>,
+        the orbit equation (the relativistic Binet equation) is:
+      </p>
+      <p class="eq">
+        d²u/dφ² + u = (3/2) r<sub>s</sub> u²
+      </p>
+      <p>
+        Without the right-hand side this is a straight line in polar coordinates. The
+        (3/2)<var>r<sub>s</sub></var><var>u</var>² term is the entire general-relativistic
+        correction — negligible far away, dominant near the hole.
+      </p>
+      <p>
+        A polar ODE per ray plane is awkward in a shader, so the renderer uses an equivalent 3D
+        form. Any planar orbit with conserved angular momentum <var>h</var> = |<b>x</b> × <b>v</b>|
+        can be rewritten as motion under a central acceleration, and matching it to the Binet
+        equation gives an inverse-<em>fourth</em>-power attraction:
+      </p>
+      <p class="eq">
+        <b>a</b> = −(3/2) r<sub>s</sub> h² <b>x</b> / r⁵
+      </p>
+      <p>
+        This is <em>exact</em> for Schwarzschild photons, not a weak-field approximation. In the
+        fragment shader it is two lines, with <var>h</var>² computed once per ray since it is
+        conserved:
+      </p>
+      <pre><code>vec3 hv = cross(p, v);
+float h2 = dot(hv, hv);            // conserved along the ray
+...
+vec3 a = -1.5 * h2 * p / (r2 * r2 * r);   // r5 = r2 * r2 * r</code></pre>
+
+      <h2>3 — The photon sphere and the shadow</h2>
+      <p>
+        Set d²u/dφ² = 0 in the Binet equation and you get a circular light orbit at
+        <var>r</var> = (3/2) <var>r<sub>s</sub></var>: the <em>photon sphere</em>. It is unstable —
+        a ray arriving slightly inside spirals into the hole, slightly outside escapes after
+        wrapping around. Whether a ray makes it is decided by its impact parameter <var>b</var>
+        (the perpendicular offset of the incoming ray from the hole). The critical value is:
+      </p>
+      <p class="eq">
+        b<sub>c</sub> = (3√3 / 2) r<sub>s</sub> ≈ 2.598 r<sub>s</sub>
+      </p>
+      <p>
+        Drag the slider through <var>b<sub>c</sub></var> and watch the ray wrap more and more
+        before the outcome flips:
+      </p>
+      <div class="controls">
+        <label for="bSlider">impact parameter b</label>
+        <input id="bSlider" type="range" min="0.4" max="6" step="0.005" value="2.75" />
+        <output id="bReadout"></output>
+      </div>
+      <figure>
+        <canvas id="rayFan" width="1280" height="800"></canvas>
+        <figcaption>
+          Computed photon paths (same integrator as the shader). Solid disk: horizon
+          (r = r<sub>s</sub>). Dashed: photon sphere (1.5 r<sub>s</sub>). The white ray is the
+          slider's; red rays fall in, the rest escape.
+        </figcaption>
+      </figure>
+      <figure>
+        <canvas id="potential" width="1280" height="560"></canvas>
+        <figcaption>
+          Why b<sub>c</sub> exists: radial motion obeys (dr/dλ)² = 1/b² − V(r) with effective
+          potential V(r) = (1 − r<sub>s</sub>/r)/r². If the 1/b² line clears the peak (which sits
+          exactly at r = 1.5 r<sub>s</sub>), the photon falls in; otherwise it reflects off the
+          potential at the marked turning point.
+        </figcaption>
+      </figure>
+      <p>
+        This is also why the shadow looks bigger than the hole: a distant observer sees darkness
+        out to impact parameter <var>b<sub>c</sub></var> ≈ 2.6 <var>r<sub>s</sub></var>, not
+        <var>r<sub>s</sub></var>. And rays with <var>b</var> just above critical circle the hole
+        once or more before escaping, which is what builds the bright, razor-thin
+        <em>photon ring</em> at the shadow's edge.
+      </p>
+
+      <h2>4 — Marching the rays</h2>
+      <p>
+        Each pixel fires one ray from the camera and integrates the acceleration law with velocity
+        Verlet. The step size adapts: proportional to <var>r</var> (curvature grows near the hole),
+        clamped finer inside the disk slab so the volumetric texture resolves.
+      </p>
+      <pre><code>float dt = clamp(0.12 * r, 0.02, 0.7);
+if (insideDiskSlab) dt = min(dt, 0.085);
+
+vec3 a1 = -1.5 * h2 * p / (r2 * r2 * r);
+vec3 pn = p + v * dt + 0.5 * a1 * dt * dt;
+vec3 a2 = accel(pn);
+v += 0.5 * (a1 + a2) * dt;
+p = pn;</code></pre>
+      <p>Three exits: fall through the horizon (pixel stays black — that <em>is</em> the shadow),
+        escape past <var>r</var> = 40 (sample the starfield with the <em>bent</em> direction, which
+        is all gravitational lensing of the background is), or run out of steps. Along the way the
+        ray accumulates disk emission with standard volumetric compositing:</p>
+      <pre><code>color += transmittance * emission * dt;
+transmittance *= exp(-absorption * dt);</code></pre>
+
+      <h2>5 — The accretion disk</h2>
+      <p>
+        The disk is a thin slab of glowing gas in the equatorial plane on circular orbits. Stable
+        circular orbits for matter only exist down to the ISCO (innermost stable circular orbit) at
+        <var>r</var> = 3 <var>r<sub>s</sub></var>, so that is the inner edge. The local orbital
+        speed, as measured by a hovering observer, is
+      </p>
+      <p class="eq">
+        v = √( M / (r − 2M) ) · c &nbsp;&nbsp;⇒&nbsp;&nbsp; v(ISCO) = c/2
+      </p>
+      <p>
+        Gas temperature follows the Shakura–Sunyaev thin-disk profile
+        <var>T</var> ∝ <var>r</var><sup>−3/4</sup>, and each sample emits blackbody light at its
+        local temperature. The streaky texture is fractal noise sheared by differential rotation:
+        inner gas orbits faster (Ω ∝ <var>r</var><sup>−3/2</sup>), so any blob stretches into a
+        trailing spiral on its own.
+      </p>
+      <p>
+        The iconic look — the disk visible <em>above and below</em> the shadow even though it is
+        flat and edge-on — is nothing but lensing. Rays leaving the camera slightly upward bend
+        over the hole and land on the <em>top</em> of the disk behind it; rays going under wrap
+        around and see its <em>underside</em>:
+      </p>
+      <figure>
+        <canvas id="sideView" width="1280" height="760"></canvas>
+        <figcaption>
+          Side view, computed paths. The camera sits just above the disk plane (right). Orange dots:
+          rays landing on the disk directly. Blue dots: rays that bent over or under the hole and
+          hit the far side — these form the arcs above and below the shadow.
+        </figcaption>
+      </figure>
+
+      <h2>6 — Redshift, Doppler, beaming</h2>
+      <p>
+        Light leaving the disk is shifted twice: climbing out of the gravity well, and by the
+        orbital motion of the gas. The combined factor between emitted and observed frequency is
+      </p>
+      <p class="eq">
+        g = ν<sub>obs</sub>/ν<sub>em</sub> = √(1 − r<sub>s</sub>/r) · 1 / [ γ (1 − <b>β</b>·<b>n̂</b>) ]
+      </p>
+      <p>
+        with <b>β</b> the gas velocity and <b>n̂</b> the photon's direction toward the camera.
+        Because <var>I<sub>ν</sub></var>/ν³ is a relativistic invariant, observed intensity scales
+        as <var>g</var>³ — relativistic beaming. At <var>v</var> = 0.5<var>c</var> the
+        approaching side outshines the receding side by a factor of ~25, and its blackbody
+        spectrum shifts hotter (the shader literally evaluates the Planck-locus color at
+        <var>g</var>·<var>T</var>):
+      </p>
+      <figure>
+        <canvas id="doppler" width="1280" height="700"></canvas>
+        <figcaption>
+          Top view of the disk with the camera below. The side rotating toward the camera is
+          beamed brighter and bluer by g³; the receding side is dimmed and reddened. Interstellar
+          rendered this too — then dialed it down because Nolan found the asymmetry confusing.
+          This renderer keeps it.
+        </figcaption>
+      </figure>
+
+      <h2>7 — Finishing</h2>
+      <p>
+        Escaped rays sample a procedural starfield and a faint galactic band using their final bent
+        direction, so background stars smear into arcs near the shadow for free. The accumulated
+        radiance — which spans a huge dynamic range thanks to <var>g</var>³ and
+        <var>T</var><sup>4</sup>-ish emission — goes through an ACES tonemap and gamma. That's the
+        whole pipeline: one fragment shader, ~380 integration steps per pixel, no textures, no
+        geometry.
+      </p>
+      <p class="note">
+        Everything in the figures above was integrated live on this page with the same equation the
+        shader uses — view source, it's ~200 lines.
+      </p>
+      <p><a href="/">← back to the renderer</a></p>
+    </main>
+    <script type="module" src="/src/tutorial/main.ts"></script>
+  </body>
+</html>
