@@ -99,7 +99,8 @@ function frame(nowMs: number) {
   const fl = Math.hypot(px, py, pz);
   const fx = -px / fl, fy = -py / fl, fz = -pz / fl;
   // right = normalize(cross(fwd, worldUp))
-  let rx = -fz, ry = 0, rz = fx;
+  let rx = -fz, rz = fx;
+  const ry = 0;
   const rl = Math.hypot(rx, ry, rz) || 1;
   rx /= rl; rz /= rl;
   // up = cross(right, fwd)

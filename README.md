@@ -1,75 +1,56 @@
-# React + TypeScript + Vite
+# fable-experiments
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+Graphics experiments. First up: a physically-based black hole renderer in the
+style of Interstellar's Gargantua.
 
-Currently, two official plugins are available:
+![Black hole renderer](screenshot.jpg)
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+## Black hole renderer
 
-## React Compiler
+A single WebGL2 fragment shader ray-traces null geodesics through the
+Schwarzschild metric — the shadow, the photon ring, and the accretion disk
+arcing over the hole all emerge from the integration rather than being painted
+in. No textures, no geometry, no libraries.
 
-The React Compiler is enabled on this template. See [this documentation](https://react.dev/learn/react-compiler) for more information.
+- **Exact lensing** — each pixel integrates the Cartesian form of the Binet
+  equation, `a = -(3/2) rs h² x / r⁵`, with velocity Verlet and adaptive steps
+- **Volumetric accretion disk** from the ISCO outward: Shakura–Sunyaev
+  temperature profile, blackbody emission, turbulence sheared into spiral
+  streaks by differential Keplerian rotation
+- **Relativistic light transport** — gravitational redshift, Doppler shift,
+  and g³ beaming (the asymmetry Interstellar famously toned down is left on)
+- **Lensed starfield** — escaped rays sample a procedural sky with their bent
+  direction
 
-Note: This will impact Vite dev & build performances.
+Drag to orbit, scroll to zoom. Runs at interactive rates at high resolution on
+a reasonable GPU.
 
-## Expanding the ESLint configuration
+### Tutorial
 
-If you are developing a production application, we recommend updating the configuration to enable type-aware lint rules:
+`/tutorial.html` is a write-up of the math behind the renderer, with 2D
+diagrams computed live using the same geodesic integrator as the shader —
+including an interactive impact-parameter slider showing photon capture at
+b = 3√3/2 rs.
 
-```js
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
+## Running
 
-      // Remove tseslint.configs.recommended and replace with this
-      tseslint.configs.recommendedTypeChecked,
-      // Alternatively, use this for stricter rules
-      tseslint.configs.strictTypeChecked,
-      // Optionally, add this for stylistic rules
-      tseslint.configs.stylisticTypeChecked,
-
-      // Other configs...
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+```sh
+npm install
+npm run dev
 ```
 
-You can also install [eslint-plugin-react-x](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-x) and [eslint-plugin-react-dom](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-dom) for React-specific lint rules:
+Open the printed URL for the renderer, or `/tutorial.html` for the math.
 
-```js
-// eslint.config.js
-import reactX from 'eslint-plugin-react-x'
-import reactDom from 'eslint-plugin-react-dom'
+## Code layout
 
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-      // Enable lint rules for React
-      reactX.configs['recommended-typescript'],
-      // Enable lint rules for React DOM
-      reactDom.configs.recommended,
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
-```
+- [`src/blackhole/shaders.ts`](src/blackhole/shaders.ts) — the GLSL; physics
+  notes in comments
+- [`src/blackhole/main.ts`](src/blackhole/main.ts) — WebGL2 setup and orbit
+  camera
+- [`src/tutorial/main.ts`](src/tutorial/main.ts) — the tutorial's computed
+  diagrams
+- [`tutorial.html`](tutorial.html) — the write-up
+
+## License
+
+[MIT](LICENSE)
