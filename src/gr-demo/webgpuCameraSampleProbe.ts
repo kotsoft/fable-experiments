@@ -28,7 +28,7 @@ interface WebGpuConstants {
 const FLOAT_BYTES = Float32Array.BYTES_PER_ELEMENT;
 const INPUT_FLOATS_PER_RAY = 28;
 
-const CAMERA_SAMPLE_SHADER = `
+export const CAMERA_SAMPLE_SHADER = `
 struct CameraUniforms {
   position: vec4<f32>,
   observerVelocity: vec4<f32>,

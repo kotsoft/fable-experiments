@@ -23,7 +23,7 @@ import {
   compositeOutputRows,
   compositeProbeDetail,
 } from '../gr/compositeReadback';
-import { runWebGpuComposite, runWebGpuCompositeProbe } from './webgpuCompositeProbe';
+import { runWebGpuCompositeFromCamera, runWebGpuCompositeProbe } from './webgpuCompositeProbe';
 import { runWebGpuCameraSampleProbe } from './webgpuCameraSampleProbe';
 import { runWebGpuHamiltonianProbe } from './webgpuHamiltonianProbe';
 import { runWebGpuDiskProbe } from './webgpuDiskProbe';
@@ -426,11 +426,11 @@ async function runGpuCompositeProbe() {
 async function renderGpuPreview() {
   const width = 64;
   const height = 36;
-  const samples = createCompositeRenderSamples(width, height);
+  const options = createCompositeCameraOptions(width, height);
   previewButton.textContent = 'rendering WebGPU preview...';
   previewButton.setAttribute('disabled', 'true');
   try {
-    const result = await runWebGpuComposite(samples);
+    const result = await runWebGpuCompositeFromCamera(options);
     if (!result.supported || !result.output) {
       setSummaryLine('gpu preview', result.message);
       return;
@@ -837,10 +837,6 @@ function createCompositeProbeBuffers(): { samples: Float32Array; expected: Float
     }),
     expected: createCompositeExpectedFromProbeGrid(grid),
   };
-}
-
-function createCompositeRenderSamples(width: number, height: number): Float32Array {
-  return createCompositeCameraSamples(createCompositeCameraOptions(width, height));
 }
 
 function createCompositeCameraOptions(width: number, height: number): CompositeCameraSampleOptions {

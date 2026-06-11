@@ -1,8 +1,16 @@
 import {
+  COMPOSITE_INPUT_FLOATS_PER_RAY,
+  COMPOSITE_OUTPUT_FLOATS_PER_RAY,
   compareCompositeReadback,
   compositeOutputByteLength,
   compositeRayCount,
 } from '../gr/compositeReadback';
+import {
+  COMPOSITE_CAMERA_UNIFORM_FLOATS,
+  createCompositeCameraUniforms,
+  type CompositeCameraSampleOptions,
+} from '../gr/compositeSamples';
+import { CAMERA_SAMPLE_SHADER } from './webgpuCameraSampleProbe';
 
 export interface WebGpuCompositeProbeResult {
   supported: boolean;
@@ -15,6 +23,7 @@ export interface WebGpuCompositeProbeResult {
 
 interface WebGpuConstants {
   GPUBufferUsage?: {
+    UNIFORM: number;
     STORAGE: number;
     COPY_DST: number;
     COPY_SRC: number;
@@ -359,6 +368,8 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
 }
 `;
 
+const FLOAT_BYTES = Float32Array.BYTES_PER_ELEMENT;
+
 export async function runWebGpuCompositeProbe(
   samples: Float32Array<ArrayBufferLike>,
   expected: Float32Array<ArrayBufferLike>,
@@ -444,6 +455,96 @@ export async function runWebGpuComposite(
   return {
     supported: true,
     message: 'WebGPU composite renderer completed',
+    output: outputCopy,
+  };
+}
+
+export async function runWebGpuCompositeFromCamera(
+  options: CompositeCameraSampleOptions,
+): Promise<WebGpuCompositeRunResult> {
+  const constants = globalThis as typeof globalThis & WebGpuConstants;
+  const usage = constants.GPUBufferUsage;
+  const mapMode = constants.GPUMapMode;
+  if (!navigator.gpu || !usage || !mapMode) {
+    return { supported: false, message: 'WebGPU globals are unavailable' };
+  }
+
+  const uniforms = createCompositeCameraUniforms(options);
+  const rayCount = options.width * options.height;
+  const sampleByteLength = rayCount * COMPOSITE_INPUT_FLOATS_PER_RAY * FLOAT_BYTES;
+  const outputByteLength = rayCount * COMPOSITE_OUTPUT_FLOATS_PER_RAY * FLOAT_BYTES;
+  const adapter = await navigator.gpu.requestAdapter();
+  if (!adapter) return { supported: false, message: 'No WebGPU adapter available' };
+  const device = await adapter.requestDevice();
+
+  const uniformBuffer = device.createBuffer({
+    size: COMPOSITE_CAMERA_UNIFORM_FLOATS * FLOAT_BYTES,
+    usage: usage.UNIFORM | usage.COPY_DST,
+  });
+  const samples = device.createBuffer({
+    size: sampleByteLength,
+    usage: usage.STORAGE,
+  });
+  const output = device.createBuffer({
+    size: outputByteLength,
+    usage: usage.STORAGE | usage.COPY_SRC,
+  });
+  const readback = device.createBuffer({
+    size: outputByteLength,
+    usage: usage.COPY_DST | usage.MAP_READ,
+  });
+
+  device.queue.writeBuffer(uniformBuffer, 0, uniforms);
+
+  const cameraModule = device.createShaderModule({ code: CAMERA_SAMPLE_SHADER });
+  const cameraPipeline = device.createComputePipeline({
+    layout: 'auto',
+    compute: { module: cameraModule, entryPoint: 'main' },
+  });
+  const cameraBindGroup = device.createBindGroup({
+    layout: cameraPipeline.getBindGroupLayout(0),
+    entries: [
+      { binding: 0, resource: { buffer: uniformBuffer } },
+      { binding: 1, resource: { buffer: samples } },
+    ],
+  });
+
+  const compositeModule = device.createShaderModule({ code: COMPOSITE_SHADER });
+  const compositePipeline = device.createComputePipeline({
+    layout: 'auto',
+    compute: { module: compositeModule, entryPoint: 'main' },
+  });
+  const compositeBindGroup = device.createBindGroup({
+    layout: compositePipeline.getBindGroupLayout(0),
+    entries: [
+      { binding: 0, resource: { buffer: samples } },
+      { binding: 1, resource: { buffer: output } },
+    ],
+  });
+
+  const encoder = device.createCommandEncoder();
+  const cameraPass = encoder.beginComputePass();
+  cameraPass.setPipeline(cameraPipeline);
+  cameraPass.setBindGroup(0, cameraBindGroup);
+  cameraPass.dispatchWorkgroups(Math.ceil(rayCount / 64));
+  cameraPass.end();
+
+  const compositePass = encoder.beginComputePass();
+  compositePass.setPipeline(compositePipeline);
+  compositePass.setBindGroup(0, compositeBindGroup);
+  compositePass.dispatchWorkgroups(Math.ceil(rayCount / 64));
+  compositePass.end();
+
+  encoder.copyBufferToBuffer(output, 0, readback, 0, outputByteLength);
+  device.queue.submit([encoder.finish()]);
+
+  await readback.mapAsync(mapMode.READ);
+  const outputCopy = new Float32Array(readback.getMappedRange().slice(0));
+  readback.unmap();
+
+  return {
+    supported: true,
+    message: 'WebGPU camera-generated composite renderer completed',
     output: outputCopy,
   };
 }
