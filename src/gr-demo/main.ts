@@ -7,7 +7,15 @@ import {
   type TraceResult,
 } from '../gr/geodesic';
 import { refineDiskCrossing, type ThinDisk } from '../gr/disk';
-import { horizonRadius, kerrSchildNullSpatial, kerrSchildParams, kerrSchildRadius, kerrSchildScalar, type Vec4 } from '../gr/kerrSchild';
+import {
+  horizonRadius,
+  kerrSchildNullSpatial,
+  kerrSchildParams,
+  kerrSchildRadius,
+  kerrSchildScalar,
+  type Vec3,
+  type Vec4,
+} from '../gr/kerrSchild';
 import { sampleDiskRadiance, type DiskRadianceModel } from '../gr/radiance';
 import { probeGridToReadback, READBACK_FLOATS_PER_RAY, ReadbackStatus } from '../gr/readback';
 import { renderProbeGrid, type ProbeGrid } from '../gr/referenceProbe';
@@ -70,6 +78,8 @@ panel.appendChild(controls);
 const spinInput = controlRange('spin', 0, 0.95, 0.01, 0.55);
 const radiusInput = controlRange('observer r', 4, 20, 0.25, 10);
 const heightInput = controlRange('height', -8, 8, 0.25, 3);
+const yawInput = controlRange('look yaw', -60, 60, 1, 0);
+const pitchInput = controlRange('look pitch', -35, 35, 1, 0);
 const fovInput = controlRange('fov', 35, 85, 1, 47);
 const resolutionSelect = document.createElement('select');
 resolutionSelect.style.cssText =
@@ -221,6 +231,8 @@ previewButton.addEventListener('click', () => {
   spinInput.input,
   radiusInput.input,
   heightInput.input,
+  yawInput.input,
+  pitchInput.input,
   fovInput.input,
 ].forEach((input) => {
   input.addEventListener('input', () => scheduleGpuPreviewRender());
@@ -485,6 +497,7 @@ async function renderGpuPreview() {
       'gpu preview',
       `${width} x ${height}, spin ${options.params.spin.toFixed(2)}, ` +
         `r ${options.position.x.toFixed(2)}, z ${options.position.z.toFixed(2)}, ` +
+        `yaw ${yawInput.input.value}, pitch ${pitchInput.input.value}, ` +
         `disk hits ${diskHits}, horizons ${horizons}, max drift ${maxDrift.toExponential(3)}`,
     );
   } catch (error) {
@@ -900,7 +913,8 @@ function createCompositeCameraOptions(width: number, height: number): CompositeC
   const params = kerrSchildParams(Number(spinInput.input.value), 1);
   const position = { x: Number(radiusInput.input.value), y: 0, z: Number(heightInput.input.value) };
   const observerVelocity = staticObserverFourVelocity(position, params);
-  const tetrad = buildObserverTetrad(position, params, observerVelocity);
+  const cameraHints = cameraAxisHints(position, Number(yawInput.input.value), Number(pitchInput.input.value));
+  const tetrad = buildObserverTetrad(position, params, observerVelocity, cameraHints);
   const traceOptions = {
     stepSize: 0.04,
     maxSteps: 520,
@@ -927,6 +941,39 @@ function createCompositeCameraOptions(width: number, height: number): CompositeC
     disk,
     radianceModel,
   };
+}
+
+function cameraAxisHints(position: Vec3, yawDegrees: number, pitchDegrees: number) {
+  const baseForward = normalize3({ x: -position.x, y: -position.y, z: -position.z });
+  const baseRight = normalize3({ x: baseForward.z, y: 0, z: -baseForward.x });
+  const baseUp = { x: 0, y: 1, z: 0 };
+  const yaw = yawDegrees * Math.PI / 180;
+  const pitch = pitchDegrees * Math.PI / 180;
+  const yawedForward = normalize3(add3(scale3(baseForward, Math.cos(yaw)), scale3(baseRight, Math.sin(yaw))));
+  const yawedRight = normalize3(add3(scale3(baseRight, Math.cos(yaw)), scale3(baseForward, -Math.sin(yaw))));
+  const forward = normalize3(add3(scale3(yawedForward, Math.cos(pitch)), scale3(baseUp, Math.sin(pitch))));
+  return {
+    forward: spatialVec4(forward),
+    right: spatialVec4(yawedRight),
+    up: spatialVec4(baseUp),
+  };
+}
+
+function normalize3(v: Vec3): Vec3 {
+  const length = Math.hypot(v.x, v.y, v.z) || 1;
+  return { x: v.x / length, y: v.y / length, z: v.z / length };
+}
+
+function add3(a: Vec3, b: Vec3): Vec3 {
+  return { x: a.x + b.x, y: a.y + b.y, z: a.z + b.z };
+}
+
+function scale3(v: Vec3, scale: number): Vec3 {
+  return { x: v.x * scale, y: v.y * scale, z: v.z * scale };
+}
+
+function spatialVec4(v: Vec3): Vec4 {
+  return { t: 0, x: v.x, y: v.y, z: v.z };
 }
 
 function selectedResolution(): { width: number; height: number } {
