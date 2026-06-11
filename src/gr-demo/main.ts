@@ -9,9 +9,14 @@ import {
 import { refineDiskCrossing, type ThinDisk } from '../gr/disk';
 import { horizonRadius, kerrSchildNullSpatial, kerrSchildParams, kerrSchildRadius, kerrSchildScalar, type Vec4 } from '../gr/kerrSchild';
 import { sampleDiskRadiance, type DiskRadianceModel } from '../gr/radiance';
-import { probeGridToReadback, READBACK_FLOATS_PER_RAY, ReadbackStatus, statusToReadback } from '../gr/readback';
+import { probeGridToReadback, READBACK_FLOATS_PER_RAY, ReadbackStatus } from '../gr/readback';
 import { renderProbeGrid, type ProbeGrid } from '../gr/referenceProbe';
-import { buildObserverTetrad, launchPhotonFromTetrad, staticObserverFourVelocity } from '../gr/tetrad';
+import { buildObserverTetrad, staticObserverFourVelocity } from '../gr/tetrad';
+import {
+  createCompositeCameraSamples,
+  createCompositeExpectedFromProbeGrid,
+  createCompositeSamplesFromProbeGrid,
+} from '../gr/compositeSamples';
 import {
   COMPOSITE_OUTPUT_FLOATS_PER_RAY,
   compositeOutputRows,
@@ -787,50 +792,18 @@ function createCompositeProbeBuffers(): { samples: Float32Array; expected: Float
     disk,
     radianceModel,
   );
-  const samples = new Float32Array(grid.rays.length * 28);
-  const expected = new Float32Array(grid.rays.length * 8);
-  grid.rays.forEach((ray, index) => {
-    const momentum = launchPhotonFromTetrad(position, params, tetrad, ray.localDirection);
-    const sampleBase = index * 28;
-    const expectedBase = index * 8;
-    samples[sampleBase] = 0;
-    samples[sampleBase + 1] = position.x;
-    samples[sampleBase + 2] = position.y;
-    samples[sampleBase + 3] = position.z;
-    samples[sampleBase + 4] = momentum.t;
-    samples[sampleBase + 5] = momentum.x;
-    samples[sampleBase + 6] = momentum.y;
-    samples[sampleBase + 7] = momentum.z;
-    samples[sampleBase + 8] = observerVelocity.t;
-    samples[sampleBase + 9] = observerVelocity.x;
-    samples[sampleBase + 10] = observerVelocity.y;
-    samples[sampleBase + 11] = observerVelocity.z;
-    samples[sampleBase + 12] = params.spin;
-    samples[sampleBase + 13] = traceOptions.stepSize;
-    samples[sampleBase + 14] = traceOptions.escapeRadius;
-    samples[sampleBase + 15] = traceOptions.singularityRadius;
-    samples[sampleBase + 16] = traceOptions.maxSteps;
-    samples[sampleBase + 17] = params.mass;
-    samples[sampleBase + 18] = 0;
-    samples[sampleBase + 19] = 0;
-    samples[sampleBase + 20] = disk.innerRadius;
-    samples[sampleBase + 21] = disk.outerRadius;
-    samples[sampleBase + 22] = radianceModel.innerTemperature;
-    samples[sampleBase + 23] = radianceModel.emissivityScale;
-    samples[sampleBase + 24] = radianceModel.boostPower;
-    samples[sampleBase + 25] = 1;
-    samples[sampleBase + 26] = 0;
-    samples[sampleBase + 27] = 0;
-    expected[expectedBase] = statusToReadback(ray.status);
-    expected[expectedBase + 1] = ray.steps;
-    expected[expectedBase + 2] = ray.finalRadius;
-    expected[expectedBase + 3] = ray.diskHit?.radius ?? -1;
-    expected[expectedBase + 4] = ray.color[0];
-    expected[expectedBase + 5] = ray.color[1];
-    expected[expectedBase + 6] = ray.color[2];
-    expected[expectedBase + 7] = ray.maxHamiltonianDrift;
-  });
-  return { samples, expected };
+  return {
+    samples: createCompositeSamplesFromProbeGrid(grid, {
+      position,
+      tetrad,
+      observerVelocity,
+      params,
+      traceOptions,
+      disk,
+      radianceModel,
+    }),
+    expected: createCompositeExpectedFromProbeGrid(grid),
+  };
 }
 
 function createCompositeRenderSamples(width: number, height: number): Float32Array {
@@ -852,48 +825,18 @@ function createCompositeRenderSamples(width: number, height: number): Float32Arr
     emissivityScale: 1,
     boostPower: 4,
   };
-  const aspect = width / height;
-  const tanHalfFov = Math.tan(0.82 * 0.5);
-  const samples = new Float32Array(width * height * 28);
-  for (let y = 0; y < height; y++) {
-    for (let x = 0; x < width; x++) {
-      const index = y * width + x;
-      const ndcX = (2 * (x + 0.5) / width - 1) * aspect;
-      const ndcY = 1 - 2 * (y + 0.5) / height;
-      const localDirection = normalize3({ x: ndcX * tanHalfFov, y: ndcY * tanHalfFov, z: 1 });
-      const momentum = launchPhotonFromTetrad(position, params, tetrad, localDirection);
-      const base = index * 28;
-      samples[base] = 0;
-      samples[base + 1] = position.x;
-      samples[base + 2] = position.y;
-      samples[base + 3] = position.z;
-      samples[base + 4] = momentum.t;
-      samples[base + 5] = momentum.x;
-      samples[base + 6] = momentum.y;
-      samples[base + 7] = momentum.z;
-      samples[base + 8] = observerVelocity.t;
-      samples[base + 9] = observerVelocity.x;
-      samples[base + 10] = observerVelocity.y;
-      samples[base + 11] = observerVelocity.z;
-      samples[base + 12] = params.spin;
-      samples[base + 13] = traceOptions.stepSize;
-      samples[base + 14] = traceOptions.escapeRadius;
-      samples[base + 15] = traceOptions.singularityRadius;
-      samples[base + 16] = traceOptions.maxSteps;
-      samples[base + 17] = params.mass;
-      samples[base + 18] = 0;
-      samples[base + 19] = 0;
-      samples[base + 20] = disk.innerRadius;
-      samples[base + 21] = disk.outerRadius;
-      samples[base + 22] = radianceModel.innerTemperature;
-      samples[base + 23] = radianceModel.emissivityScale;
-      samples[base + 24] = radianceModel.boostPower;
-      samples[base + 25] = 1;
-      samples[base + 26] = 0;
-      samples[base + 27] = 0;
-    }
-  }
-  return samples;
+  return createCompositeCameraSamples({
+    width,
+    height,
+    position,
+    tetrad,
+    observerVelocity,
+    params,
+    verticalFovRadians: 0.82,
+    traceOptions,
+    disk,
+    radianceModel,
+  });
 }
 
 function readbackRows(readback: Float32Array) {
@@ -1009,11 +952,6 @@ function drawCompositePreview(
 function toDisplayByte(value: number): number {
   const mapped = Math.max(0, value) / (1 + Math.max(0, value));
   return Math.round(Math.pow(mapped, 1 / 2.2) * 255);
-}
-
-function normalize3(v: { x: number; y: number; z: number }) {
-  const length = Math.hypot(v.x, v.y, v.z) || 1;
-  return { x: v.x / length, y: v.y / length, z: v.z / length };
 }
 
 function section(): HTMLElement {
