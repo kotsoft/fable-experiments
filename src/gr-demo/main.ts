@@ -1,7 +1,8 @@
-import { kerrSchildParams } from '../gr/kerrSchild';
+import { horizonRadius, kerrSchildNullSpatial, kerrSchildParams, kerrSchildRadius, kerrSchildScalar } from '../gr/kerrSchild';
 import { probeGridToReadback, READBACK_FLOATS_PER_RAY, ReadbackStatus } from '../gr/readback';
 import { renderProbeGrid, type ProbeGrid } from '../gr/referenceProbe';
 import { buildObserverTetrad, staticObserverFourVelocity } from '../gr/tetrad';
+import { runWebGpuMetricProbe } from './webgpuMetricProbe';
 import { runWebGpuEchoReadback } from './webgpuReadback';
 
 type GpuNavigator = Navigator & {
@@ -47,6 +48,13 @@ gpuButton.style.cssText =
   'cursor:pointer;font:600 13px system-ui,sans-serif;margin-left:8px;';
 panel.appendChild(gpuButton);
 
+const metricButton = document.createElement('button');
+metricButton.textContent = 'run WebGPU metric probe';
+metricButton.style.cssText =
+  'background:#2f3442;color:#e6eaf4;border:1px solid #4a5060;border-radius:6px;padding:8px 10px;' +
+  'cursor:pointer;font:600 13px system-ui,sans-serif;margin:8px 0 0 0;';
+panel.appendChild(metricButton);
+
 const summary = document.createElement('pre');
 summary.style.cssText = 'white-space:pre-wrap;margin:14px 0 0;color:#d7dbe5;';
 panel.appendChild(summary);
@@ -62,6 +70,9 @@ renderCpuProbe();
 runButton.addEventListener('click', renderCpuProbe);
 gpuButton.addEventListener('click', () => {
   void runGpuEcho();
+});
+metricButton.addEventListener('click', () => {
+  void runGpuMetricProbe();
 });
 
 async function detectWebGpu() {
@@ -95,7 +106,8 @@ function renderCpuProbe() {
     `disk hits: ${diskHits.length}\n` +
     `max |H drift|: ${maxDrift.toExponential(3)}\n` +
     `floats/ray: ${READBACK_FLOATS_PER_RAY}\n` +
-    'gpu echo: not run';
+    'gpu echo: not run\n' +
+    'gpu metric: not run';
 
   table.textContent = [
     'px py status steps radius drift diskR redshift intensity rgb',
@@ -134,6 +146,24 @@ async function runGpuEcho() {
   }
 }
 
+async function runGpuMetricProbe() {
+  const { samples, expected } = createMetricProbeBuffers();
+  metricButton.textContent = 'running WebGPU metric probe...';
+  metricButton.setAttribute('disabled', 'true');
+  try {
+    const result = await runWebGpuMetricProbe(samples, expected);
+    const metricLine = result.supported
+      ? `max diff ${(result.maxAbsDiff ?? Number.NaN).toExponential(3)}`
+      : result.message;
+    setSummaryLine('gpu metric', metricLine);
+  } catch (error) {
+    setSummaryLine('gpu metric', `failed (${errorMessage(error)})`);
+  } finally {
+    metricButton.textContent = 'run WebGPU metric probe';
+    metricButton.removeAttribute('disabled');
+  }
+}
+
 function createReferenceGrid(): ProbeGrid {
   const params = kerrSchildParams(0.55, 1);
   const position = { x: 10, y: 0, z: 3 };
@@ -158,6 +188,31 @@ function createReferenceGrid(): ProbeGrid {
       boostPower: 4,
     },
   );
+}
+
+function createMetricProbeBuffers(): { samples: Float32Array; expected: Float32Array } {
+  const rows = [
+    { position: { x: 8, y: 0, z: 1 }, spin: 0 },
+    { position: { x: 7, y: 2, z: -1.5 }, spin: 0.45 },
+    { position: { x: -4, y: 6, z: 2.25 }, spin: 0.75 },
+    { position: { x: 3.5, y: -2.5, z: 4 }, spin: 0.9 },
+  ];
+  const samples = new Float32Array(rows.length * 4);
+  const expected = new Float32Array(rows.length * 4);
+  rows.forEach((row, index) => {
+    const params = kerrSchildParams(row.spin, 1);
+    const l = kerrSchildNullSpatial(row.position, params);
+    const base = index * 4;
+    samples[base] = row.position.x;
+    samples[base + 1] = row.position.y;
+    samples[base + 2] = row.position.z;
+    samples[base + 3] = row.spin;
+    expected[base] = kerrSchildRadius(row.position, params);
+    expected[base + 1] = kerrSchildScalar(row.position, params);
+    expected[base + 2] = l.x * l.x + l.y * l.y + l.z * l.z;
+    expected[base + 3] = horizonRadius(params);
+  });
+  return { samples, expected };
 }
 
 function readbackRows(readback: Float32Array) {
@@ -195,8 +250,14 @@ function section(): HTMLElement {
 }
 
 function setGpuEchoLine(text: string) {
+  setSummaryLine('gpu echo', text);
+}
+
+function setSummaryLine(label: string, text: string) {
   const current = summary.textContent ?? '';
-  summary.textContent = current.replace(/\ngpu echo: .*/, '') + `\ngpu echo: ${text}`;
+  const line = `${label}: ${text}`;
+  const pattern = new RegExp(`\\n${label}: .*`);
+  summary.textContent = pattern.test(current) ? current.replace(pattern, `\n${line}`) : `${current}\n${line}`;
 }
 
 function errorMessage(error: unknown): string {
