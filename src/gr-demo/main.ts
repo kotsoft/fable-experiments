@@ -106,11 +106,13 @@ resolutionSelect.style.cssText =
   ['96 x 54', '96x54'],
   ['128 x 72', '128x72'],
   ['160 x 90', '160x90'],
+  ['192 x 108', '192x108'],
+  ['256 x 144', '256x144'],
 ].forEach(([label, value]) => {
   const option = document.createElement('option');
   option.textContent = label;
   option.value = value;
-  if (value === '128x72') option.selected = true;
+  if (value === '160x90') option.selected = true;
   resolutionSelect.appendChild(option);
 });
 controls.appendChild(labeledControl('resolution', resolutionSelect));
@@ -224,7 +226,7 @@ previewCanvas.width = 128;
 previewCanvas.height = 72;
 previewCanvas.style.cssText =
   'display:block;width:100%;max-width:1180px;aspect-ratio:16/9;background:#000;margin:0 0 14px;' +
-  'image-rendering:pixelated;border:1px solid #252936;border-radius:6px;cursor:grab;touch-action:none;user-select:none;';
+  'border:1px solid #252936;border-radius:6px;cursor:grab;touch-action:none;user-select:none;';
 output.appendChild(previewCanvas);
 
 const table = document.createElement('pre');
