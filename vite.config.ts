@@ -18,6 +18,8 @@ export default defineConfig({
         home: fileURLToPath(new URL('./index.html', import.meta.url)),
         blackhole: fileURLToPath(new URL('./blackhole/index.html', import.meta.url)),
         tutorial: fileURLToPath(new URL('./blackhole/tutorial.html', import.meta.url)),
+        kerr: fileURLToPath(new URL('./kerr/index.html', import.meta.url)),
+        kerrTutorial: fileURLToPath(new URL('./kerr/tutorial.html', import.meta.url)),
       },
     },
   },

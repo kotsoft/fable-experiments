@@ -41,19 +41,30 @@ npm install
 npm run dev
 ```
 
-The root URL lists the experiments; `/blackhole/` is the renderer and
-`/blackhole/tutorial.html` the math.
+The root URL lists the experiments; each experiment lives at its own path
+(`/blackhole/`, `/kerr/`) with a `tutorial.html` beside it.
+
+## Spinning (Kerr) black hole
+
+`/kerr/` renders a rotating black hole — no force-law shortcut exists for
+Kerr, so the shader integrates the actual geodesics: Hamiltonian form in
+Cartesian Kerr-Schild coordinates, RK4 with numerical gradients. Frame
+dragging, the D-shaped shadow, and the spin-dependent ISCO all emerge, with a
+slider to sweep the spin from 0 to 0.998. Its tutorial's diagrams are
+dynamically generated SVG, and the integrator is validated against Bardeen's
+exact critical impact parameters in
+[`scripts/validate-kerr.mjs`](scripts/validate-kerr.mjs).
 
 ## Code layout
 
 - [`index.html`](index.html) — the experiment list
-- [`blackhole/`](blackhole/) — the renderer and tutorial pages
-- [`src/blackhole/shaders.ts`](src/blackhole/shaders.ts) — the GLSL; physics
-  notes in comments
-- [`src/blackhole/main.ts`](src/blackhole/main.ts) — WebGL2 setup and orbit
-  camera
-- [`src/tutorial/main.ts`](src/tutorial/main.ts) — the tutorial's computed
-  diagrams
+- [`blackhole/`](blackhole/), [`kerr/`](kerr/) — demo + tutorial pages
+- [`src/blackhole/`](src/blackhole/), [`src/kerr/`](src/kerr/) — renderers
+  (GLSL with physics notes, WebGL2 setup, orbit camera)
+- [`src/tutorial/`](src/tutorial/), [`src/kerr-tutorial/`](src/kerr-tutorial/)
+  — the tutorials' computed diagrams (canvas and SVG respectively)
+- [`scripts/validate-kerr.mjs`](scripts/validate-kerr.mjs) — physics
+  validation for the Kerr integrator
 
 ## License
 
