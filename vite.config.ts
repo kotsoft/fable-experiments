@@ -20,6 +20,8 @@ export default defineConfig({
         tutorial: fileURLToPath(new URL('./blackhole/tutorial.html', import.meta.url)),
         kerr: fileURLToPath(new URL('./kerr/index.html', import.meta.url)),
         kerrTutorial: fileURLToPath(new URL('./kerr/tutorial.html', import.meta.url)),
+        fall: fileURLToPath(new URL('./fall/index.html', import.meta.url)),
+        fallTutorial: fileURLToPath(new URL('./fall/tutorial.html', import.meta.url)),
       },
     },
   },
