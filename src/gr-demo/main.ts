@@ -50,16 +50,44 @@ type GpuNavigator = Navigator & {
 };
 
 const root = document.createElement('main');
+root.className = 'gr-shell';
 root.style.cssText =
   'min-height:100vh;background:#08090d;color:#d7dbe5;font:14px/1.55 ui-monospace,SFMono-Regular,Consolas,monospace;' +
-  'display:grid;grid-template-columns:minmax(300px,400px) minmax(0,1fr);gap:18px;padding:18px;box-sizing:border-box;';
+  'display:grid;grid-template-columns:minmax(300px,400px) minmax(0,1fr);gap:0;padding:0;box-sizing:border-box;';
 document.body.style.margin = '0';
 document.body.appendChild(root);
 
 const panel = section();
+panel.className = 'gr-panel';
+panel.style.cssText += 'margin:18px;max-height:calc(100vh - 36px);overflow:auto;';
 const output = section();
-output.style.cssText += 'overflow:auto;min-width:0;';
+output.className = 'gr-output';
+output.style.cssText =
+  'position:relative;min-width:0;min-height:100vh;overflow:hidden;background:#000;border:0;border-radius:0;padding:0;';
 root.append(panel, output);
+
+const layoutStyle = document.createElement('style');
+layoutStyle.textContent = `
+  @media (max-width: 820px) {
+    .gr-shell {
+      display: block !important;
+    }
+    .gr-panel {
+      margin: 0 !important;
+      max-height: none !important;
+      border-radius: 0 !important;
+      border-left: 0 !important;
+      border-right: 0 !important;
+    }
+    .gr-output {
+      min-height: 58vh !important;
+    }
+    .gr-output canvas {
+      height: 58vh !important;
+    }
+  }
+`;
+document.head.appendChild(layoutStyle);
 
 const title = document.createElement('h1');
 title.textContent = 'Kerr Black Hole Renderer';
@@ -234,22 +262,27 @@ const summary = document.createElement('pre');
 summary.style.cssText = 'white-space:pre-wrap;margin:0;color:#d7dbe5;';
 diagnostics.appendChild(summary);
 
+const previewHud = document.createElement('div');
+previewHud.style.cssText =
+  'position:absolute;left:16px;right:16px;top:14px;z-index:2;display:grid;gap:4px;pointer-events:none;' +
+  'text-shadow:0 1px 8px #000;';
+output.appendChild(previewHud);
+
 const previewTitle = document.createElement('h2');
-previewTitle.textContent = 'Live WebGPU Preview';
-previewTitle.style.cssText = 'font:600 15px system-ui,sans-serif;margin:0 0 8px;color:#fff;';
-output.appendChild(previewTitle);
+previewTitle.textContent = 'Kerr-Schild GRRT';
+previewTitle.style.cssText = 'font:600 14px system-ui,sans-serif;margin:0;color:#fff;';
+previewHud.appendChild(previewTitle);
 
 const previewReadout = document.createElement('div');
 previewReadout.textContent = 'Rendering...';
-previewReadout.style.cssText = 'color:#aeb5c5;margin:0 0 10px;white-space:pre-wrap;';
-output.appendChild(previewReadout);
+previewReadout.style.cssText = 'color:#cbd1df;white-space:pre-wrap;font-size:12px;max-width:86ch;';
+previewHud.appendChild(previewReadout);
 
 const previewCanvas = document.createElement('canvas');
 previewCanvas.width = 128;
 previewCanvas.height = 72;
 previewCanvas.style.cssText =
-  'display:block;width:100%;max-width:1180px;aspect-ratio:16/9;background:#000;margin:0 0 14px;' +
-  'border:1px solid #252936;border-radius:6px;cursor:grab;touch-action:none;user-select:none;';
+  'display:block;width:100%;height:100vh;object-fit:contain;background:#000;cursor:grab;touch-action:none;user-select:none;';
 output.appendChild(previewCanvas);
 
 const table = document.createElement('pre');
