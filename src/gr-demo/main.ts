@@ -116,6 +116,21 @@ resolutionSelect.style.cssText =
   resolutionSelect.appendChild(option);
 });
 controls.appendChild(labeledControl('resolution', resolutionSelect));
+const qualitySelect = document.createElement('select');
+qualitySelect.style.cssText =
+  'background:#171a22;color:#e6eaf4;border:1px solid #3b4150;border-radius:5px;padding:5px;font:13px ui-monospace,monospace;';
+[
+  ['fast', 'fast'],
+  ['balanced', 'balanced'],
+  ['high', 'high'],
+].forEach(([label, value]) => {
+  const option = document.createElement('option');
+  option.textContent = label;
+  option.value = value;
+  if (value === 'balanced') option.selected = true;
+  qualitySelect.appendChild(option);
+});
+controls.appendChild(labeledControl('trace quality', qualitySelect));
 
 const primaryActions = document.createElement('div');
 primaryActions.style.cssText = 'display:flex;gap:8px;align-items:center;margin:0 0 12px;';
@@ -288,6 +303,7 @@ previewButton.addEventListener('click', () => {
 });
 diskDirectionSelect.addEventListener('change', () => scheduleGpuPreviewRender());
 resolutionSelect.addEventListener('change', () => scheduleGpuPreviewRender(0));
+qualitySelect.addEventListener('change', () => scheduleGpuPreviewRender(0));
 installPreviewDragControls();
 scheduleGpuPreviewRender(80);
 
@@ -550,6 +566,7 @@ async function renderGpuPreview() {
       `yaw ${yawInput.input.value}, pitch ${pitchInput.input.value}, ` +
       `disk ${options.disk.innerRadius.toFixed(1)}-${options.disk.outerRadius.toFixed(1)}, ` +
       `temp ${options.radianceModel.innerTemperature.toFixed(0)}, ` +
+      `quality ${qualitySelect.value} (${options.traceOptions.stepSize.toFixed(3)} x ${options.traceOptions.maxSteps}), ` +
       `disk hits ${diskHits}, horizons ${horizons}, max drift ${maxDrift.toExponential(3)}`;
     previewReadout.textContent = previewLine;
     setSummaryLine('gpu preview', previewLine);
@@ -1020,12 +1037,7 @@ function createCompositeCameraOptions(width: number, height: number): CompositeC
   const observerVelocity = staticObserverFourVelocity(position, params);
   const cameraHints = cameraAxisHints(position, Number(yawInput.input.value), Number(pitchInput.input.value));
   const tetrad = buildObserverTetrad(position, params, observerVelocity, cameraHints);
-  const traceOptions = {
-    stepSize: 0.04,
-    maxSteps: 520,
-    escapeRadius: 32,
-    singularityRadius: 0.2,
-  };
+  const traceOptions = selectedTraceOptions();
   const { disk, radianceModel } = selectedDiskModel();
   return {
     width,
@@ -1056,6 +1068,17 @@ function selectedDiskModel(): { disk: ThinDisk; radianceModel: DiskRadianceModel
       spinDirection,
     },
   };
+}
+
+function selectedTraceOptions() {
+  const quality = qualitySelect.value;
+  if (quality === 'fast') {
+    return { stepSize: 0.05, maxSteps: 460, escapeRadius: 32, singularityRadius: 0.2 };
+  }
+  if (quality === 'high') {
+    return { stepSize: 0.025, maxSteps: 1000, escapeRadius: 32, singularityRadius: 0.2 };
+  }
+  return { stepSize: 0.035, maxSteps: 720, escapeRadius: 32, singularityRadius: 0.2 };
 }
 
 function cameraAxisHints(position: Vec3, yawDegrees: number, pitchDegrees: number) {
