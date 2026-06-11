@@ -54,13 +54,38 @@ output.style.overflow = 'auto';
 root.append(panel, output);
 
 const title = document.createElement('h1');
-title.textContent = 'Kerr-Schild GRRT diagnostics';
+title.textContent = 'Kerr-Schild GRRT';
 title.style.cssText = 'font:600 18px system-ui,sans-serif;margin:0 0 10px;color:#fff;';
 panel.appendChild(title);
 
 const status = document.createElement('div');
 status.style.cssText = 'white-space:pre-wrap;color:#aeb5c5;margin-bottom:12px;';
 panel.appendChild(status);
+
+const controls = document.createElement('div');
+controls.style.cssText =
+  'display:grid;grid-template-columns:1fr;gap:8px;margin:0 0 12px;padding:10px;border:1px solid #252936;border-radius:6px;';
+panel.appendChild(controls);
+
+const spinInput = controlRange('spin', 0, 0.95, 0.01, 0.55);
+const radiusInput = controlRange('observer r', 4, 20, 0.25, 10);
+const heightInput = controlRange('height', -8, 8, 0.25, 3);
+const fovInput = controlRange('fov', 35, 85, 1, 47);
+const resolutionSelect = document.createElement('select');
+resolutionSelect.style.cssText =
+  'background:#171a22;color:#e6eaf4;border:1px solid #3b4150;border-radius:5px;padding:5px;font:13px ui-monospace,monospace;';
+[
+  ['96 x 54', '96x54'],
+  ['128 x 72', '128x72'],
+  ['160 x 90', '160x90'],
+].forEach(([label, value]) => {
+  const option = document.createElement('option');
+  option.textContent = label;
+  option.value = value;
+  if (value === '128x72') option.selected = true;
+  resolutionSelect.appendChild(option);
+});
+controls.appendChild(labeledControl('resolution', resolutionSelect));
 
 const runButton = document.createElement('button');
 runButton.textContent = 'run CPU reference probe';
@@ -132,7 +157,7 @@ compositeButton.style.cssText =
 panel.appendChild(compositeButton);
 
 const previewButton = document.createElement('button');
-previewButton.textContent = 'render WebGPU preview';
+previewButton.textContent = 'render WebGPU view';
 previewButton.style.cssText =
   'background:#e8b873;color:#101114;border:0;border-radius:6px;padding:8px 10px;' +
   'cursor:pointer;font:600 13px system-ui,sans-serif;margin:8px 0 0 8px;';
@@ -143,10 +168,10 @@ summary.style.cssText = 'white-space:pre-wrap;margin:14px 0 0;color:#d7dbe5;';
 panel.appendChild(summary);
 
 const previewCanvas = document.createElement('canvas');
-previewCanvas.width = 64;
-previewCanvas.height = 36;
+previewCanvas.width = 128;
+previewCanvas.height = 72;
 previewCanvas.style.cssText =
-  'display:block;width:100%;max-width:960px;aspect-ratio:16/9;background:#000;margin:0 0 14px;' +
+  'display:block;width:100%;max-width:1180px;aspect-ratio:16/9;background:#000;margin:0 0 14px;' +
   'image-rendering:pixelated;border:1px solid #252936;border-radius:6px;';
 output.appendChild(previewCanvas);
 
@@ -423,10 +448,9 @@ async function runGpuCompositeProbe() {
 }
 
 async function renderGpuPreview() {
-  const width = 64;
-  const height = 36;
+  const { width, height } = selectedResolution();
   const options = createCompositeCameraOptions(width, height);
-  previewButton.textContent = 'rendering WebGPU preview...';
+  previewButton.textContent = 'rendering WebGPU view...';
   previewButton.setAttribute('disabled', 'true');
   try {
     const result = await renderWebGpuCompositeFromCameraToCanvas(options, previewCanvas);
@@ -440,12 +464,14 @@ async function renderGpuPreview() {
     const maxDrift = Math.max(...rows.map((row) => row.drift));
     setSummaryLine(
       'gpu preview',
-      `${width} x ${height}, disk hits ${diskHits}, horizons ${horizons}, max drift ${maxDrift.toExponential(3)}`,
+      `${width} x ${height}, spin ${options.params.spin.toFixed(2)}, ` +
+        `r ${options.position.x.toFixed(2)}, z ${options.position.z.toFixed(2)}, ` +
+        `disk hits ${diskHits}, horizons ${horizons}, max drift ${maxDrift.toExponential(3)}`,
     );
   } catch (error) {
     setSummaryLine('gpu preview', `failed (${errorMessage(error)})`);
   } finally {
-    previewButton.textContent = 'render WebGPU preview';
+    previewButton.textContent = 'render WebGPU view';
     previewButton.removeAttribute('disabled');
   }
 }
@@ -838,8 +864,8 @@ function createCompositeProbeBuffers(): { samples: Float32Array; expected: Float
 }
 
 function createCompositeCameraOptions(width: number, height: number): CompositeCameraSampleOptions {
-  const params = kerrSchildParams(0.55, 1);
-  const position = { x: 10, y: 0, z: 3 };
+  const params = kerrSchildParams(Number(spinInput.input.value), 1);
+  const position = { x: Number(radiusInput.input.value), y: 0, z: Number(heightInput.input.value) };
   const observerVelocity = staticObserverFourVelocity(position, params);
   const tetrad = buildObserverTetrad(position, params, observerVelocity);
   const traceOptions = {
@@ -863,11 +889,16 @@ function createCompositeCameraOptions(width: number, height: number): CompositeC
     tetrad,
     observerVelocity,
     params,
-    verticalFovRadians: 0.82,
+    verticalFovRadians: Number(fovInput.input.value) * Math.PI / 180,
     traceOptions,
     disk,
     radianceModel,
   };
+}
+
+function selectedResolution(): { width: number; height: number } {
+  const [width, height] = resolutionSelect.value.split('x').map((value) => Number(value));
+  return { width, height };
 }
 
 function readbackRows(readback: Float32Array) {
@@ -962,6 +993,42 @@ function section(): HTMLElement {
   const el = document.createElement('section');
   el.style.cssText = 'background:#101218;border:1px solid #252936;border-radius:8px;padding:14px;';
   return el;
+}
+
+function controlRange(label: string, min: number, max: number, step: number, value: number) {
+  const input = document.createElement('input');
+  input.type = 'range';
+  input.min = String(min);
+  input.max = String(max);
+  input.step = String(step);
+  input.value = String(value);
+  input.style.cssText = 'width:100%;accent-color:#e8b873;';
+  const valueEl = document.createElement('span');
+  valueEl.textContent = formatControlValue(value);
+  valueEl.style.cssText = 'color:#e8b873;text-align:right;';
+  input.addEventListener('input', () => {
+    valueEl.textContent = formatControlValue(Number(input.value));
+  });
+  const row = document.createElement('label');
+  row.style.cssText = 'display:grid;grid-template-columns:96px 1fr 56px;gap:8px;align-items:center;color:#aeb5c5;';
+  const labelEl = document.createElement('span');
+  labelEl.textContent = label;
+  row.append(labelEl, input, valueEl);
+  controls.appendChild(row);
+  return { input, valueEl };
+}
+
+function labeledControl(label: string, element: HTMLElement): HTMLElement {
+  const row = document.createElement('label');
+  row.style.cssText = 'display:grid;grid-template-columns:96px 1fr;gap:8px;align-items:center;color:#aeb5c5;';
+  const labelEl = document.createElement('span');
+  labelEl.textContent = label;
+  row.append(labelEl, element);
+  return row;
+}
+
+function formatControlValue(value: number): string {
+  return Math.abs(value) >= 10 ? value.toFixed(0) : value.toFixed(2);
 }
 
 function setGpuEchoLine(text: string) {
