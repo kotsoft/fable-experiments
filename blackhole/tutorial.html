@@ -86,7 +86,7 @@
     <main>
       <h1>Rendering a black hole, the Interstellar way</h1>
       <p>
-        The <a href="/">renderer</a> draws Gargantua's three signature features — the dark shadow,
+        The <a href="/blackhole/">renderer</a> draws Gargantua's three signature features — the dark shadow,
         the thin photon ring hugging it, and the accretion disk that seems to arc <em>over</em> the
         hole — without modeling any of them directly. All three fall out of one thing: tracing light
         rays through curved spacetime, per pixel, on the GPU. This page walks through the math it
@@ -186,6 +186,67 @@
 float h2 = dot(hv, hv);            // conserved along the ray
 ...
 vec3 a = -1.5 * h2 * p / (r2 * r2 * r);   // r5 = r2 * r2 * r</code></pre>
+
+      <details>
+        <summary>For programmers: where did the curved-space math go? This looks like a particle sim</summary>
+        <p>
+          Because it <em>is</em> one. If you have ever written an orbit toy — planets attracting
+          each other with <code>pos</code>, <code>vel</code>, <code>acc</code> and a little
+          integrator — the shader loop is exactly that program. Compare:
+        </p>
+        <pre><code>// Newtonian gravity (a planet in a game):
+acc = -G * M * pos / pow(r, 3.0);    // pull toward center, strength ∝ 1/r²
+
+// Schwarzschild photon (this renderer):
+acc = -1.5 * h2 * pos / pow(r, 5.0); // pull toward center, strength ∝ 1/r⁴</code></pre>
+        <p>
+          Same loop, same integrator, same <code>cross</code> and <code>dot</code> products. The
+          only difference is the exponent and the per-ray constant <var>h</var>². So where did all
+          the geodesic machinery go? It got <em>compiled away</em>, in three steps:
+        </p>
+        <p>
+          <strong>Step 1 — geodesic equation.</strong> "Straightest path through the metric" is,
+          concretely, a differential equation: it tells you how a path's coordinates
+          (<var>t</var>, <var>r</var>, <var>φ</var>) accelerate as you move along it. Written out
+          for Schwarzschild it's a messy coupled system — nothing you'd want in a shader.
+        </p>
+        <p>
+          <strong>Step 2 — conservation laws shrink it.</strong> The metric doesn't change with
+          time or with angle, and each symmetry hands you a conserved quantity (energy, angular
+          momentum) — the same reason <code>cross(pos, vel)</code> stays constant in your orbit
+          toy: a pull pointing straight at the center has no lever arm to apply torque. Using the
+          conserved quantities to eliminate variables, the messy system collapses to one ODE for
+          the orbit's shape, <var>r</var> as a function of <var>φ</var>. The
+          <var>u</var> = 1/<var>r</var> substitution is nothing deep — just a change of variables
+          that makes the ODE almost linear, the same instinct as switching to log-space when it
+          makes the math cleaner. That one-liner is the Binet equation above.
+        </p>
+        <p>
+          <strong>Step 3 — reverse-engineer a force.</strong> Now ask a programmer's question:
+          "what acceleration field <code>acc(pos)</code>, in ordinary flat xyz space, would make
+          particles trace <em>exactly</em> these curves?" For any central pull there's a standard
+          recipe linking the force law to the orbit ODE, and running it backwards on the Binet
+          equation spits out the inverse-fourth-power law. For Schwarzschild photons the match is
+          exact — not an approximation. All of the curvature survives as that one strange
+          exponent.
+        </p>
+        <p>The dictionary between the two worlds:</p>
+        <pre><code>geodesic              →  the polyline your integrator traces
+affine parameter λ    →  your loop's accumulated dt (a step counter, not clock time)
+conserved E, L        →  the constants you'd factor out of any orbit sim
+h = |x × v|           →  cross(pos, vel) — computed once, never changes
+metric / curvature    →  baked into the force law's exponent
+"null"                →  it's light: only vel's direction matters, |vel| is meaningless</code></pre>
+        <p>
+          Two honest caveats. First, the parameter you march along is <em>not</em> time — photons
+          don't experience time — it's just "distance along the loop," which is why the renderer
+          can pick whatever step size it likes. Second, this flat-space-force trick is a lucky
+          special case, not how GR is done in general: photons around a <em>non-rotating</em> hole
+          happen to admit an exact equivalent force. A spinning (Kerr) black hole — the kind
+          Interstellar actually modeled — has no such shortcut, and you'd integrate the full
+          geodesic equations instead.
+        </p>
+      </details>
 
       <h2>3 — The photon sphere and the shadow</h2>
       <p>
@@ -373,7 +434,7 @@ transmittance *= exp(-absorption * dt);</code></pre>
         Everything in the figures above was integrated live on this page with the same equation the
         shader uses — view source, it's ~200 lines.
       </p>
-      <p><a href="/">← back to the renderer</a></p>
+      <p><a href="/blackhole/">← back to the renderer</a> · <a href="/">all experiments</a></p>
     </main>
     <script type="module" src="/src/tutorial/main.ts"></script>
   </body>

@@ -1,7 +1,8 @@
-# fable-experiments
+# Experiments with Fable
 
-Graphics experiments. First up: a physically-based black hole renderer in the
-style of Interstellar's Gargantua.
+A growing collection of small, self-contained graphics experiments — each one
+a live demo plus a tutorial page explaining the math behind it. First up: a
+physically-based black hole renderer in the style of Interstellar's Gargantua.
 
 ![Black hole renderer](screenshot.jpg)
 
@@ -27,10 +28,11 @@ a reasonable GPU.
 
 ### Tutorial
 
-`/tutorial.html` is a write-up of the math behind the renderer, with 2D
-diagrams computed live using the same geodesic integrator as the shader —
+`/blackhole/tutorial.html` is a write-up of the math behind the renderer, with
+2D diagrams computed live using the same geodesic integrator as the shader —
 including an interactive impact-parameter slider showing photon capture at
-b = 3√3/2 rs.
+b = 3√3/2 rs. Expandable primers explain geodesics, Doppler beaming, and the
+curved-space-to-vector-math translation in plain language.
 
 ## Running
 
@@ -39,17 +41,19 @@ npm install
 npm run dev
 ```
 
-Open the printed URL for the renderer, or `/tutorial.html` for the math.
+The root URL lists the experiments; `/blackhole/` is the renderer and
+`/blackhole/tutorial.html` the math.
 
 ## Code layout
 
+- [`index.html`](index.html) — the experiment list
+- [`blackhole/`](blackhole/) — the renderer and tutorial pages
 - [`src/blackhole/shaders.ts`](src/blackhole/shaders.ts) — the GLSL; physics
   notes in comments
 - [`src/blackhole/main.ts`](src/blackhole/main.ts) — WebGL2 setup and orbit
   camera
 - [`src/tutorial/main.ts`](src/tutorial/main.ts) — the tutorial's computed
   diagrams
-- [`tutorial.html`](tutorial.html) — the write-up
 
 ## License
 

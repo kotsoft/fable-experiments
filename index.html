@@ -4,10 +4,54 @@
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>fable-experiments</title>
+    <title>Experiments with Fable</title>
+    <style>
+      :root {
+        --bg: #0b0c10;
+        --fg: #c9cdd6;
+        --dim: #7d8290;
+        --accent: #e8b873;
+        --line: #23262e;
+      }
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--fg);
+        font: 16px/1.65 system-ui, sans-serif;
+      }
+      main { max-width: 40rem; margin: 0 auto; padding: 5rem 1.25rem 6rem; }
+      h1 { font-size: 1.7rem; color: #fff; margin-bottom: 0.4rem; }
+      .tag { color: var(--dim); margin-top: 0; }
+      a { color: var(--accent); }
+      ul { list-style: none; padding: 0; margin-top: 3rem; }
+      li {
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        padding: 1.1rem 1.4rem;
+        margin: 1rem 0;
+      }
+      li a.demo { font-size: 1.15rem; text-decoration: none; }
+      li a.demo:hover { text-decoration: underline; }
+      li p { margin: 0.45rem 0 0; color: var(--dim); font-size: 0.92rem; }
+    </style>
   </head>
   <body>
-    <div id="root"></div>
-    <script type="module" src="/src/blackhole/main.ts"></script>
+    <main>
+      <h1>Experiments with Fable</h1>
+      <p class="tag">
+        Small, self-contained graphics experiments — each one a live demo plus a write-up of the
+        math behind it.
+      </p>
+      <ul>
+        <li>
+          <a class="demo" href="/blackhole/">Black hole</a>
+          <p>
+            A Schwarzschild black hole ray-traced in a single WebGL2 fragment shader: real
+            geodesic lensing, the photon ring, and a relativistic accretion disk.
+            <a href="/blackhole/tutorial.html">how it works &rarr;</a>
+          </p>
+        </li>
+      </ul>
+    </main>
   </body>
 </html>

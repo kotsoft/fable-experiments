@@ -15,8 +15,9 @@ export default defineConfig({
   build: {
     rollupOptions: {
       input: {
-        main: fileURLToPath(new URL('./index.html', import.meta.url)),
-        tutorial: fileURLToPath(new URL('./tutorial.html', import.meta.url)),
+        home: fileURLToPath(new URL('./index.html', import.meta.url)),
+        blackhole: fileURLToPath(new URL('./blackhole/index.html', import.meta.url)),
+        tutorial: fileURLToPath(new URL('./blackhole/tutorial.html', import.meta.url)),
       },
     },
   },
