@@ -399,6 +399,15 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
 
 const FLOAT_BYTES = Float32Array.BYTES_PER_ELEMENT;
 
+interface PipelineCache {
+  camera?: GPUComputePipeline;
+  composite?: GPUComputePipeline;
+  presentByFormat: Map<GPUTextureFormat, GPURenderPipeline>;
+}
+
+let cachedDevicePromise: Promise<GPUDevice | null> | undefined;
+const pipelineCaches = new WeakMap<GPUDevice, PipelineCache>();
+
 const PRESENT_SHADER = `
 struct CompositeOutput {
   summary: vec4<f32>,
@@ -483,9 +492,8 @@ export async function runWebGpuComposite(
     return { supported: false, message: 'Composite sample buffer has an invalid ray stride' };
   }
   const outputByteLength = compositeOutputByteLength(inputCopy);
-  const adapter = await navigator.gpu.requestAdapter();
-  if (!adapter) return { supported: false, message: 'No WebGPU adapter available' };
-  const device = await adapter.requestDevice();
+  const device = await requestCachedDevice();
+  if (!device) return { supported: false, message: 'No WebGPU adapter available' };
 
   const source = device.createBuffer({
     size: inputCopy.byteLength,
@@ -502,11 +510,7 @@ export async function runWebGpuComposite(
 
   device.queue.writeBuffer(source, 0, inputCopy);
 
-  const module = device.createShaderModule({ code: COMPOSITE_SHADER });
-  const pipeline = device.createComputePipeline({
-    layout: 'auto',
-    compute: { module, entryPoint: 'main' },
-  });
+  const pipeline = getCompositePipeline(device);
   const bindGroup = device.createBindGroup({
     layout: pipeline.getBindGroupLayout(0),
     entries: [
@@ -549,9 +553,8 @@ export async function runWebGpuCompositeFromCamera(
   const rayCount = options.width * options.height;
   const sampleByteLength = rayCount * COMPOSITE_INPUT_FLOATS_PER_RAY * FLOAT_BYTES;
   const outputByteLength = rayCount * COMPOSITE_OUTPUT_FLOATS_PER_RAY * FLOAT_BYTES;
-  const adapter = await navigator.gpu.requestAdapter();
-  if (!adapter) return { supported: false, message: 'No WebGPU adapter available' };
-  const device = await adapter.requestDevice();
+  const device = await requestCachedDevice();
+  if (!device) return { supported: false, message: 'No WebGPU adapter available' };
 
   const uniformBuffer = device.createBuffer({
     size: COMPOSITE_CAMERA_UNIFORM_FLOATS * FLOAT_BYTES,
@@ -572,11 +575,7 @@ export async function runWebGpuCompositeFromCamera(
 
   device.queue.writeBuffer(uniformBuffer, 0, uniforms);
 
-  const cameraModule = device.createShaderModule({ code: CAMERA_SAMPLE_SHADER });
-  const cameraPipeline = device.createComputePipeline({
-    layout: 'auto',
-    compute: { module: cameraModule, entryPoint: 'main' },
-  });
+  const cameraPipeline = getCameraPipeline(device);
   const cameraBindGroup = device.createBindGroup({
     layout: cameraPipeline.getBindGroupLayout(0),
     entries: [
@@ -585,11 +584,7 @@ export async function runWebGpuCompositeFromCamera(
     ],
   });
 
-  const compositeModule = device.createShaderModule({ code: COMPOSITE_SHADER });
-  const compositePipeline = device.createComputePipeline({
-    layout: 'auto',
-    compute: { module: compositeModule, entryPoint: 'main' },
-  });
+  const compositePipeline = getCompositePipeline(device);
   const compositeBindGroup = device.createBindGroup({
     layout: compositePipeline.getBindGroupLayout(0),
     entries: [
@@ -641,9 +636,8 @@ export async function renderWebGpuCompositeFromCameraToCanvas(
   const rayCount = options.width * options.height;
   const sampleByteLength = rayCount * COMPOSITE_INPUT_FLOATS_PER_RAY * FLOAT_BYTES;
   const outputByteLength = rayCount * COMPOSITE_OUTPUT_FLOATS_PER_RAY * FLOAT_BYTES;
-  const adapter = await navigator.gpu.requestAdapter();
-  if (!adapter) return { supported: false, message: 'No WebGPU adapter available' };
-  const device = await adapter.requestDevice();
+  const device = await requestCachedDevice();
+  if (!device) return { supported: false, message: 'No WebGPU adapter available' };
   const context = canvas.getContext('webgpu') as GPUCanvasContext | null;
   if (!context) return { supported: false, message: 'Canvas WebGPU context is unavailable' };
 
@@ -681,11 +675,7 @@ export async function renderWebGpuCompositeFromCameraToCanvas(
   device.queue.writeBuffer(uniformBuffer, 0, uniforms);
   device.queue.writeBuffer(renderUniformBuffer, 0, new Float32Array([options.width, options.height, 0, 0]));
 
-  const cameraModule = device.createShaderModule({ code: CAMERA_SAMPLE_SHADER });
-  const cameraPipeline = device.createComputePipeline({
-    layout: 'auto',
-    compute: { module: cameraModule, entryPoint: 'main' },
-  });
+  const cameraPipeline = getCameraPipeline(device);
   const cameraBindGroup = device.createBindGroup({
     layout: cameraPipeline.getBindGroupLayout(0),
     entries: [
@@ -694,11 +684,7 @@ export async function renderWebGpuCompositeFromCameraToCanvas(
     ],
   });
 
-  const compositeModule = device.createShaderModule({ code: COMPOSITE_SHADER });
-  const compositePipeline = device.createComputePipeline({
-    layout: 'auto',
-    compute: { module: compositeModule, entryPoint: 'main' },
-  });
+  const compositePipeline = getCompositePipeline(device);
   const compositeBindGroup = device.createBindGroup({
     layout: compositePipeline.getBindGroupLayout(0),
     entries: [
@@ -707,16 +693,7 @@ export async function renderWebGpuCompositeFromCameraToCanvas(
     ],
   });
 
-  const presentModule = device.createShaderModule({ code: PRESENT_SHADER });
-  const presentPipeline = device.createRenderPipeline({
-    layout: 'auto',
-    vertex: { module: presentModule, entryPoint: 'vertex_main' },
-    fragment: {
-      module: presentModule,
-      entryPoint: 'fragment_main',
-      targets: [{ format }],
-    },
-  });
+  const presentPipeline = getPresentPipeline(device, format);
   const presentBindGroup = device.createBindGroup({
     layout: presentPipeline.getBindGroupLayout(0),
     entries: [
@@ -765,4 +742,62 @@ export async function renderWebGpuCompositeFromCameraToCanvas(
     message: 'WebGPU camera-generated composite rendered to canvas',
     output: outputCopy,
   };
+}
+
+async function requestCachedDevice(): Promise<GPUDevice | null> {
+  if (!cachedDevicePromise) {
+    cachedDevicePromise = navigator.gpu.requestAdapter().then((adapter) => adapter?.requestDevice() ?? null);
+  }
+  return cachedDevicePromise;
+}
+
+function getPipelineCache(device: GPUDevice): PipelineCache {
+  let cache = pipelineCaches.get(device);
+  if (!cache) {
+    cache = { presentByFormat: new Map() };
+    pipelineCaches.set(device, cache);
+  }
+  return cache;
+}
+
+function getCameraPipeline(device: GPUDevice): GPUComputePipeline {
+  const cache = getPipelineCache(device);
+  if (!cache.camera) {
+    const module = device.createShaderModule({ code: CAMERA_SAMPLE_SHADER });
+    cache.camera = device.createComputePipeline({
+      layout: 'auto',
+      compute: { module, entryPoint: 'main' },
+    });
+  }
+  return cache.camera;
+}
+
+function getCompositePipeline(device: GPUDevice): GPUComputePipeline {
+  const cache = getPipelineCache(device);
+  if (!cache.composite) {
+    const module = device.createShaderModule({ code: COMPOSITE_SHADER });
+    cache.composite = device.createComputePipeline({
+      layout: 'auto',
+      compute: { module, entryPoint: 'main' },
+    });
+  }
+  return cache.composite;
+}
+
+function getPresentPipeline(device: GPUDevice, format: GPUTextureFormat): GPURenderPipeline {
+  const cache = getPipelineCache(device);
+  const cached = cache.presentByFormat.get(format);
+  if (cached) return cached;
+  const module = device.createShaderModule({ code: PRESENT_SHADER });
+  const pipeline = device.createRenderPipeline({
+    layout: 'auto',
+    vertex: { module, entryPoint: 'vertex_main' },
+    fragment: {
+      module,
+      entryPoint: 'fragment_main',
+      targets: [{ format }],
+    },
+  });
+  cache.presentByFormat.set(format, pipeline);
+  return pipeline;
 }
