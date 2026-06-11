@@ -150,7 +150,41 @@ function diagnosticColor(status: ProbeRay['status'], velocity: Vec4): [number, n
   if (status === 'singularity') return [0.3, 0, 0.5];
   if (status === 'max-steps') return [0.9, 0.1, 0.1];
   const dir = normalize3({ x: velocity.x, y: velocity.y, z: velocity.z });
-  return [0.35 + 0.35 * dir.x, 0.35 + 0.35 * dir.y, 0.55 + 0.3 * dir.z];
+  return escapedBackgroundColor(dir);
+}
+
+export function escapedBackgroundColor(direction: Vec3): [number, number, number] {
+  const dir = normalize3(direction);
+  const bandCoordinate = Math.abs(0.72 * dir.y + 0.24 * dir.x - 0.1 * dir.z);
+  const band = Math.max(0, 1 - bandCoordinate * 4.5) ** 2;
+  const base: [number, number, number] = [
+    0.006 + 0.012 * Math.max(dir.z, 0),
+    0.008 + 0.01 * Math.max(dir.y, 0),
+    0.016 + 0.018 * Math.max(-dir.z, 0),
+  ];
+  const color: [number, number, number] = [
+    base[0] + 0.035 * band,
+    base[1] + 0.032 * band,
+    base[2] + 0.048 * band,
+  ];
+  addStar(color, dir, normalize3({ x: 0.42, y: 0.16, z: 0.89 }), 220, [1.9, 1.65, 1.2]);
+  addStar(color, dir, normalize3({ x: -0.68, y: -0.08, z: 0.73 }), 180, [1.15, 1.35, 1.9]);
+  addStar(color, dir, normalize3({ x: 0.09, y: 0.82, z: -0.56 }), 260, [1.7, 1.45, 1.05]);
+  addStar(color, dir, normalize3({ x: -0.24, y: -0.74, z: -0.63 }), 200, [1.25, 1.55, 1.8]);
+  return color;
+}
+
+function addStar(
+  color: [number, number, number],
+  direction: Vec3,
+  starDirection: Vec3,
+  sharpness: number,
+  tint: [number, number, number],
+): void {
+  const strength = Math.max(0, dot3(direction, starDirection)) ** sharpness;
+  color[0] += tint[0] * strength;
+  color[1] += tint[1] * strength;
+  color[2] += tint[2] * strength;
 }
 
 function radialCoordinateSpeed(state: GeodesicState, params: KerrSchildParams): number {
@@ -167,4 +201,8 @@ function position3(v: Vec4): Vec3 {
 function normalize3(v: Vec3): Vec3 {
   const length = Math.hypot(v.x, v.y, v.z) || 1;
   return { x: v.x / length, y: v.y / length, z: v.z / length };
+}
+
+function dot3(a: Vec3, b: Vec3): number {
+  return a.x * b.x + a.y * b.y + a.z * b.z;
 }

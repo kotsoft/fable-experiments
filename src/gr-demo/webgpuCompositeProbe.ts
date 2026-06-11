@@ -233,6 +233,27 @@ fn blackbody_rgb(temperature: f32) -> vec3<f32> {
   return vec3<f32>(red, green, blue);
 }
 
+fn add_star(color: vec3<f32>, direction: vec3<f32>, star_direction: vec3<f32>, sharpness: f32, tint: vec3<f32>) -> vec3<f32> {
+  let strength = pow(max(dot(direction, normalize(star_direction)), 0.0), sharpness);
+  return color + tint * strength;
+}
+
+fn escaped_background_color(direction: vec3<f32>) -> vec3<f32> {
+  let dir = normalize(direction);
+  let band_coordinate = abs(0.72 * dir.y + 0.24 * dir.x - 0.1 * dir.z);
+  let band = pow(max(1.0 - band_coordinate * 4.5, 0.0), 2.0);
+  var color = vec3<f32>(
+    0.006 + 0.012 * max(dir.z, 0.0),
+    0.008 + 0.01 * max(dir.y, 0.0),
+    0.016 + 0.018 * max(-dir.z, 0.0)
+  ) + vec3<f32>(0.035, 0.032, 0.048) * band;
+  color = add_star(color, dir, vec3<f32>(0.42, 0.16, 0.89), 220.0, vec3<f32>(1.9, 1.65, 1.2));
+  color = add_star(color, dir, vec3<f32>(-0.68, -0.08, 0.73), 180.0, vec3<f32>(1.15, 1.35, 1.9));
+  color = add_star(color, dir, vec3<f32>(0.09, 0.82, -0.56), 260.0, vec3<f32>(1.7, 1.45, 1.05));
+  color = add_star(color, dir, vec3<f32>(-0.24, -0.74, -0.63), 200.0, vec3<f32>(1.25, 1.55, 1.8));
+  return color;
+}
+
 fn observed_disk_rgb(position: vec3<f32>, momentum: vec4<f32>, observer_velocity: vec4<f32>, input: RaySample) -> vec3<f32> {
   let spin = input.paramsA.x;
   let mass = input.paramsB.y;
@@ -314,7 +335,7 @@ fn diagnostic_color(status: f32, position: vec3<f32>, momentum: vec4<f32>, spin:
   }
   let velocity = coordinate_velocity(position, momentum, spin, mass).yzw;
   let dir = normalize(velocity);
-  return vec3<f32>(0.35 + 0.35 * dir.x, 0.35 + 0.35 * dir.y, 0.55 + 0.3 * dir.z);
+  return escaped_background_color(dir);
 }
 
 fn trace_composite(input: RaySample) -> CompositeOutput {

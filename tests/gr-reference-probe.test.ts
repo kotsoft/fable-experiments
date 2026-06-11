@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { kerrSchildParams } from '../src/gr/kerrSchild';
-import { renderProbeGrid } from '../src/gr/referenceProbe';
+import { escapedBackgroundColor, renderProbeGrid } from '../src/gr/referenceProbe';
 import { buildObserverTetrad, staticObserverFourVelocity } from '../src/gr/tetrad';
 
 describe('CPU reference ray probe', () => {
@@ -84,5 +84,14 @@ describe('CPU reference ray probe', () => {
     expect(diskHits.every((ray) => ray.diskHit?.radiance)).toBe(true);
     expect(diskHits.every((ray) => ray.diskHit!.radius >= 3 && ray.diskHit!.radius <= 18)).toBe(true);
     expect(diskHits.every((ray) => ray.color.every(Number.isFinite))).toBe(true);
+  });
+
+  it('uses a finite analytic background with bright fixed stars for escaped rays', () => {
+    const star = escapedBackgroundColor({ x: 0.42, y: 0.16, z: 0.89 });
+    const nearbySky = escapedBackgroundColor({ x: 0.62, y: 0.16, z: 0.76 });
+
+    expect(star.every(Number.isFinite)).toBe(true);
+    expect(nearbySky.every(Number.isFinite)).toBe(true);
+    expect(star[0] + star[1] + star[2]).toBeGreaterThan(nearbySky[0] + nearbySky[1] + nearbySky[2]);
   });
 });
