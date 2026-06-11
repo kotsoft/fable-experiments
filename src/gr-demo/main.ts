@@ -6,11 +6,13 @@ import {
   type GeodesicState,
   type TraceResult,
 } from '../gr/geodesic';
+import { refineDiskCrossing, type ThinDisk } from '../gr/disk';
 import { horizonRadius, kerrSchildNullSpatial, kerrSchildParams, kerrSchildRadius, kerrSchildScalar } from '../gr/kerrSchild';
 import { probeGridToReadback, READBACK_FLOATS_PER_RAY, ReadbackStatus } from '../gr/readback';
 import { renderProbeGrid, type ProbeGrid } from '../gr/referenceProbe';
 import { buildObserverTetrad, staticObserverFourVelocity } from '../gr/tetrad';
 import { runWebGpuHamiltonianProbe } from './webgpuHamiltonianProbe';
+import { runWebGpuDiskProbe } from './webgpuDiskProbe';
 import { runWebGpuMetricProbe } from './webgpuMetricProbe';
 import { runWebGpuEchoReadback } from './webgpuReadback';
 import { runWebGpuStepProbe } from './webgpuStepProbe';
@@ -87,6 +89,13 @@ traceButton.style.cssText =
   'cursor:pointer;font:600 13px system-ui,sans-serif;margin:8px 0 0 8px;';
 panel.appendChild(traceButton);
 
+const diskButton = document.createElement('button');
+diskButton.textContent = 'run WebGPU disk probe';
+diskButton.style.cssText =
+  'background:#2f3442;color:#e6eaf4;border:1px solid #4a5060;border-radius:6px;padding:8px 10px;' +
+  'cursor:pointer;font:600 13px system-ui,sans-serif;margin:8px 0 0 0;';
+panel.appendChild(diskButton);
+
 const summary = document.createElement('pre');
 summary.style.cssText = 'white-space:pre-wrap;margin:14px 0 0;color:#d7dbe5;';
 panel.appendChild(summary);
@@ -114,6 +123,9 @@ stepButton.addEventListener('click', () => {
 });
 traceButton.addEventListener('click', () => {
   void runGpuTraceProbe();
+});
+diskButton.addEventListener('click', () => {
+  void runGpuDiskProbe();
 });
 
 async function detectWebGpu() {
@@ -151,7 +163,8 @@ function renderCpuProbe() {
     'gpu metric: not run\n' +
     'gpu Hamiltonian: not run\n' +
     'gpu step: not run\n' +
-    'gpu trace: not run';
+    'gpu trace: not run\n' +
+    'gpu disk: not run';
 
   table.textContent = [
     'px py status steps radius drift diskR redshift intensity rgb',
@@ -260,6 +273,26 @@ async function runGpuTraceProbe() {
   } finally {
     traceButton.textContent = 'run WebGPU trace probe';
     traceButton.removeAttribute('disabled');
+  }
+}
+
+async function runGpuDiskProbe() {
+  const { samples, expected } = createDiskProbeBuffers();
+  diskButton.textContent = 'running WebGPU disk probe...';
+  diskButton.setAttribute('disabled', 'true');
+  try {
+    const result = await runWebGpuDiskProbe(samples, expected);
+    const detail = result.output ? diskProbeDetail(expected, result.output) : '';
+    const diskLine = result.supported
+      ? `max diff ${(result.maxAbsDiff ?? Number.NaN).toExponential(3)}, ` +
+        `hit mismatches ${result.hitMismatches ?? 0}${detail}`
+      : result.message;
+    setSummaryLine('gpu disk', diskLine);
+  } catch (error) {
+    setSummaryLine('gpu disk', `failed (${errorMessage(error)})`);
+  } finally {
+    diskButton.textContent = 'run WebGPU disk probe';
+    diskButton.removeAttribute('disabled');
   }
 }
 
@@ -454,6 +487,75 @@ function createTraceProbeBuffers(): { samples: Float32Array; expected: Float32Ar
   return { samples, expected };
 }
 
+function createDiskProbeBuffers(): { samples: Float32Array; expected: Float32Array } {
+  const rows: Array<{
+    position: { x: number; y: number; z: number };
+    mass: number;
+    spin: number;
+    direction: { x: number; y: number; z: number };
+    stepSize: number;
+    disk: ThinDisk;
+  }> = [
+    {
+      position: { x: 4, y: 0, z: 1 },
+      mass: 0,
+      spin: 0,
+      direction: { x: 0.5, y: 0, z: -1 },
+      stepSize: 4,
+      disk: { innerRadius: 3, outerRadius: 8 },
+    },
+    {
+      position: { x: 1, y: 0, z: 1 },
+      mass: 0,
+      spin: 0,
+      direction: { x: 0, y: 0, z: -1 },
+      stepSize: 3,
+      disk: { innerRadius: 3, outerRadius: 8 },
+    },
+    {
+      position: { x: 6, y: 0, z: 0.7 },
+      mass: 1,
+      spin: 0.55,
+      direction: { x: 0, y: 0.03, z: -1 },
+      stepSize: 1.5,
+      disk: { innerRadius: 3, outerRadius: 12 },
+    },
+  ];
+  const samples = new Float32Array(rows.length * 16);
+  const expected = new Float32Array(rows.length * 4);
+  rows.forEach((row, index) => {
+    const params = kerrSchildParams(row.spin, row.mass);
+    const state: GeodesicState = {
+      position: { t: 0, ...row.position },
+      momentum: nullCovectorFromDirection({ t: 0, ...row.position }, row.direction, params),
+    };
+    const crossing = refineDiskCrossing(state, params, row.stepSize, row.disk, 24);
+    const sampleBase = index * 16;
+    const expectedBase = index * 4;
+    samples[sampleBase] = state.position.t;
+    samples[sampleBase + 1] = state.position.x;
+    samples[sampleBase + 2] = state.position.y;
+    samples[sampleBase + 3] = state.position.z;
+    samples[sampleBase + 4] = state.momentum.t;
+    samples[sampleBase + 5] = state.momentum.x;
+    samples[sampleBase + 6] = state.momentum.y;
+    samples[sampleBase + 7] = state.momentum.z;
+    samples[sampleBase + 8] = row.spin;
+    samples[sampleBase + 9] = row.stepSize;
+    samples[sampleBase + 10] = row.disk.innerRadius;
+    samples[sampleBase + 11] = row.disk.outerRadius;
+    samples[sampleBase + 12] = params.mass;
+    samples[sampleBase + 13] = 0;
+    samples[sampleBase + 14] = 0;
+    samples[sampleBase + 15] = 0;
+    expected[expectedBase] = crossing ? 1 : 0;
+    expected[expectedBase + 1] = crossing?.affineParameter ?? -1;
+    expected[expectedBase + 2] = crossing?.radius ?? -1;
+    expected[expectedBase + 3] = crossing?.height ?? 0;
+  });
+  return { samples, expected };
+}
+
 function readbackRows(readback: Float32Array) {
   const rows = [];
   for (let i = 0; i < readback.length; i += READBACK_FLOATS_PER_RAY) {
@@ -491,6 +593,33 @@ function traceStatusToReadback(statusValue: TraceResult['status']): number {
 
 function position3(v: GeodesicState['position']) {
   return { x: v.x, y: v.y, z: v.z };
+}
+
+function diskProbeDetail(expected: Float32Array<ArrayBufferLike>, output: Float32Array<ArrayBufferLike>): string {
+  for (let i = 0; i < expected.length; i += 4) {
+    if (Math.round(expected[i]) !== Math.round(output[i])) {
+      return `, row ${i / 4} expected [${formatVec4(expected, i)}] got [${formatVec4(output, i)}]`;
+    }
+  }
+  let max = 0;
+  let offset = 0;
+  for (let i = 0; i < expected.length; i++) {
+    const diff = Math.abs(expected[i] - output[i]);
+    if (diff > max) {
+      max = diff;
+      offset = i - i % 4;
+    }
+  }
+  return max > 1e-3 ? `, max row ${offset / 4} expected [${formatVec4(expected, offset)}] got [${formatVec4(output, offset)}]` : '';
+}
+
+function formatVec4(values: Float32Array<ArrayBufferLike>, offset: number): string {
+  return [
+    values[offset].toFixed(3),
+    values[offset + 1].toFixed(3),
+    values[offset + 2].toFixed(3),
+    values[offset + 3].toExponential(1),
+  ].join(', ');
 }
 
 function section(): HTMLElement {
