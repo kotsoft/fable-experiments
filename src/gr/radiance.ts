@@ -69,11 +69,17 @@ export function diskEmitterFourVelocity(position: Vec3, params: KerrSchildParams
   const radius = Math.max(kerrSchildRadius(position, params), 1e-6);
   const radial = normalize3({ x: position.x, y: position.y, z: 0 });
   const tangent = { x: -spinDirection * radial.y, y: spinDirection * radial.x, z: 0 };
-  const betaMagnitude = Math.min(Math.sqrt(params.mass / Math.max(radius - 2 * params.mass, 1.5)), 0.82);
-  const beta = scale3(tangent, betaMagnitude);
-  const gamma = 1 / Math.sqrt(Math.max(1 - dot3(beta, beta), 1e-6));
-  const flatGuess = { t: gamma, x: gamma * beta.x, y: gamma * beta.y, z: gamma * beta.z };
-  return normalizeTimelike(position, params, flatGuess);
+  let betaMagnitude = Math.min(Math.sqrt(params.mass / Math.max(radius - 2 * params.mass, 1.5)), 0.75);
+  for (let i = 0; i < 12; i++) {
+    const beta = scale3(tangent, betaMagnitude);
+    const gamma = 1 / Math.sqrt(Math.max(1 - dot3(beta, beta), 1e-6));
+    const flatGuess = { t: gamma, x: gamma * beta.x, y: gamma * beta.y, z: gamma * beta.z };
+    if (metricDot(position, params, flatGuess, flatGuess) < -1e-8) {
+      return normalizeTimelike(position, params, flatGuess);
+    }
+    betaMagnitude *= 0.75;
+  }
+  return normalizeTimelike(position, params, { t: 1, x: 0, y: 0, z: 0 });
 }
 
 export function blackbodyRgb(temperature: number): [number, number, number] {

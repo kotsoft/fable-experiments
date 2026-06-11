@@ -53,4 +53,36 @@ describe('CPU reference ray probe', () => {
     expect(grid.rays.every((ray) => ray.color.every(Number.isFinite))).toBe(true);
     expect(Math.max(...grid.rays.map((ray) => ray.maxHamiltonianDrift))).toBeLessThan(2e-6);
   });
+
+  it('reports root-refined disk hits with radiance diagnostics', () => {
+    const params = kerrSchildParams(0.4, 1);
+    const position = { x: 10, y: 0, z: 3 };
+    const tetrad = buildObserverTetrad(position, params, staticObserverFourVelocity(position, params));
+    const grid = renderProbeGrid(
+      params,
+      { position, tetrad, verticalFovRadians: 0.75 },
+      5,
+      5,
+      {
+        stepSize: 0.04,
+        maxSteps: 1800,
+        escapeRadius: 30,
+        singularityRadius: 0.2,
+      },
+      { innerRadius: 3, outerRadius: 18 },
+      {
+        innerRadius: 3,
+        outerRadius: 18,
+        innerTemperature: 7200,
+        emissivityScale: 1,
+        boostPower: 4,
+      },
+    );
+    const diskHits = grid.rays.filter((ray) => ray.status === 'disk');
+
+    expect(diskHits.length).toBeGreaterThan(0);
+    expect(diskHits.every((ray) => ray.diskHit?.radiance)).toBe(true);
+    expect(diskHits.every((ray) => ray.diskHit!.radius >= 3 && ray.diskHit!.radius <= 18)).toBe(true);
+    expect(diskHits.every((ray) => ray.color.every(Number.isFinite))).toBe(true);
+  });
 });
