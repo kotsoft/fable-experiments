@@ -16,7 +16,11 @@ import {
   type Vec3,
   type Vec4,
 } from '../gr/kerrSchild';
-import { sampleDiskRadiance, type DiskRadianceModel } from '../gr/radiance';
+import {
+  emissivityWeightedDiskAngularVelocity,
+  sampleDiskRadiance,
+  type DiskRadianceModel,
+} from '../gr/radiance';
 import { probeGridToReadback, READBACK_FLOATS_PER_RAY, ReadbackStatus } from '../gr/readback';
 import { renderProbeGrid, type ProbeGrid } from '../gr/referenceProbe';
 import { buildObserverTetrad, staticObserverFourVelocity } from '../gr/tetrad';
@@ -298,6 +302,7 @@ let diskAnimationTimer: number | undefined;
 let isDiskAnimating = true;
 let latestPreviewStats: { diskHits: number; horizons: number; maxDrift: number } | undefined;
 let animationFramesSinceReadback = 0;
+let lastDiskAnimationTick = 0;
 
 void detectWebGpu();
 renderCpuProbe();
@@ -677,9 +682,20 @@ function setDiskAnimationEnabled(enabled: boolean): void {
     diskAnimationTimer = undefined;
   }
   if (!enabled) return;
+  lastDiskAnimationTick = performance.now();
   diskAnimationTimer = window.setInterval(() => {
-    const direction = diskDirectionSelect.value === '-1' ? -1 : 1;
-    const nextPhase = Number(diskPhaseInput.input.value) + direction * 0.12;
+    const now = performance.now();
+    const elapsedSeconds = Math.max(0, Math.min((now - lastDiskAnimationTick) / 1000, 1));
+    lastDiskAnimationTick = now;
+    const params = kerrSchildParams(Number(spinInput.input.value), 1);
+    const { disk, radianceModel } = selectedDiskModel();
+    const angularVelocity = emissivityWeightedDiskAngularVelocity(
+      disk.innerRadius,
+      disk.outerRadius,
+      params,
+      radianceModel.spinDirection ?? 1,
+    );
+    const nextPhase = Number(diskPhaseInput.input.value) + angularVelocity * elapsedSeconds;
     setWrappedRangeValue(diskPhaseInput.input, nextPhase, false);
     diskPhaseInput.valueEl.textContent = formatControlValue(Number(diskPhaseInput.input.value));
     animationFramesSinceReadback += 1;

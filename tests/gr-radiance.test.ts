@@ -4,6 +4,8 @@ import { kerrSchildParams, metricDot } from '../src/gr/kerrSchild';
 import {
   blackbodyRgb,
   diskEmitterFourVelocity,
+  emissivityWeightedDiskAngularVelocity,
+  kerrCircularOrbitAngularVelocity,
   redshiftFactor,
   sampleDiskRadiance,
   type DiskRadianceModel,
@@ -79,6 +81,28 @@ describe('disk radiance reference model', () => {
     expect(phaseShifted).not.toBeNull();
     expect(phaseZero!.temperature).toBeCloseTo(phaseShifted!.temperature, 12);
     expect(phaseZero!.bolometricIntensity).not.toBeCloseTo(phaseShifted!.bolometricIntensity, 6);
+  });
+
+  it('uses Kerr circular-orbit direction for disk pattern speed', () => {
+    const params = kerrSchildParams(0.6, 1);
+    const prograde = kerrCircularOrbitAngularVelocity(6, params, 1);
+    const retrograde = kerrCircularOrbitAngularVelocity(6, params, -1);
+
+    expect(prograde).toBeGreaterThan(0);
+    expect(retrograde).toBeLessThan(0);
+    expect(prograde).toBeCloseTo(1 / (Math.pow(6, 1.5) + 0.6), 12);
+    expect(retrograde).toBeCloseTo(-1 / (Math.pow(6, 1.5) - 0.6), 12);
+  });
+
+  it('weights animated disk phase toward the brighter inner disk', () => {
+    const params = kerrSchildParams(0.5, 1);
+    const weighted = emissivityWeightedDiskAngularVelocity(3, 18, params, 1);
+    const inner = kerrCircularOrbitAngularVelocity(3, params, 1);
+    const outer = kerrCircularOrbitAngularVelocity(18, params, 1);
+
+    expect(weighted).toBeLessThan(inner);
+    expect(weighted).toBeGreaterThan(outer);
+    expect(weighted).toBeGreaterThan((inner + outer) * 0.5);
   });
 
   it('keeps blackbody RGB in displayable normalized bounds before intensity scaling', () => {

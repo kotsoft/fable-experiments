@@ -70,6 +70,41 @@ export function diskEmissivityTexture(
   return 0.65 + 0.35 * (0.5 + 0.5 * spiral);
 }
 
+export function kerrCircularOrbitAngularVelocity(
+  radius: number,
+  params: KerrSchildParams,
+  spinDirection: 1 | -1 = 1,
+): number {
+  const safeRadius = Math.max(radius, 1e-6);
+  const sqrtMass = Math.sqrt(Math.max(params.mass, 0));
+  if (sqrtMass === 0) return 0;
+  const denominator = Math.pow(safeRadius, 1.5) + spinDirection * params.spin * sqrtMass;
+  if (Math.abs(denominator) < 1e-8) return 0;
+  return spinDirection * sqrtMass / denominator;
+}
+
+export function emissivityWeightedDiskAngularVelocity(
+  innerRadius: number,
+  outerRadius: number,
+  params: KerrSchildParams,
+  spinDirection: 1 | -1 = 1,
+): number {
+  const inner = Math.max(innerRadius, 1e-6);
+  const outer = Math.max(inner + 1e-6, outerRadius);
+  let weightedOmega = 0;
+  let totalWeight = 0;
+
+  for (let i = 0; i < 24; i++) {
+    const t = (i + 0.5) / 24;
+    const radius = inner * Math.pow(outer / inner, t);
+    const weight = Math.pow(radius / inner, -2.4);
+    weightedOmega += weight * kerrCircularOrbitAngularVelocity(radius, params, spinDirection);
+    totalWeight += weight;
+  }
+
+  return totalWeight > 0 ? weightedOmega / totalWeight : 0;
+}
+
 export function redshiftFactor(photonCovector: Vec4, emitterVelocity: Vec4, observerVelocity?: Vec4): number {
   const emitterFrequency = -covectorContraction(photonCovector, emitterVelocity);
   const observerFrequency = observerVelocity
