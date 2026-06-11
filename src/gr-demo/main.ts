@@ -1,4 +1,11 @@
-import { hamiltonian, nullCovectorFromDirection, stepNullGeodesic, type GeodesicState } from '../gr/geodesic';
+import {
+  hamiltonian,
+  nullCovectorFromDirection,
+  stepNullGeodesic,
+  traceNullGeodesic,
+  type GeodesicState,
+  type TraceResult,
+} from '../gr/geodesic';
 import { horizonRadius, kerrSchildNullSpatial, kerrSchildParams, kerrSchildRadius, kerrSchildScalar } from '../gr/kerrSchild';
 import { probeGridToReadback, READBACK_FLOATS_PER_RAY, ReadbackStatus } from '../gr/readback';
 import { renderProbeGrid, type ProbeGrid } from '../gr/referenceProbe';
@@ -7,6 +14,7 @@ import { runWebGpuHamiltonianProbe } from './webgpuHamiltonianProbe';
 import { runWebGpuMetricProbe } from './webgpuMetricProbe';
 import { runWebGpuEchoReadback } from './webgpuReadback';
 import { runWebGpuStepProbe } from './webgpuStepProbe';
+import { runWebGpuTraceProbe } from './webgpuTraceProbe';
 
 type GpuNavigator = Navigator & {
   gpu?: {
@@ -72,6 +80,13 @@ stepButton.style.cssText =
   'cursor:pointer;font:600 13px system-ui,sans-serif;margin:8px 0 0 0;';
 panel.appendChild(stepButton);
 
+const traceButton = document.createElement('button');
+traceButton.textContent = 'run WebGPU trace probe';
+traceButton.style.cssText =
+  'background:#2f3442;color:#e6eaf4;border:1px solid #4a5060;border-radius:6px;padding:8px 10px;' +
+  'cursor:pointer;font:600 13px system-ui,sans-serif;margin:8px 0 0 8px;';
+panel.appendChild(traceButton);
+
 const summary = document.createElement('pre');
 summary.style.cssText = 'white-space:pre-wrap;margin:14px 0 0;color:#d7dbe5;';
 panel.appendChild(summary);
@@ -96,6 +111,9 @@ hamiltonianButton.addEventListener('click', () => {
 });
 stepButton.addEventListener('click', () => {
   void runGpuStepProbe();
+});
+traceButton.addEventListener('click', () => {
+  void runGpuTraceProbe();
 });
 
 async function detectWebGpu() {
@@ -132,7 +150,8 @@ function renderCpuProbe() {
     'gpu echo: not run\n' +
     'gpu metric: not run\n' +
     'gpu Hamiltonian: not run\n' +
-    'gpu step: not run';
+    'gpu step: not run\n' +
+    'gpu trace: not run';
 
   table.textContent = [
     'px py status steps radius drift diskR redshift intensity rgb',
@@ -222,6 +241,25 @@ async function runGpuStepProbe() {
   } finally {
     stepButton.textContent = 'run WebGPU step probe';
     stepButton.removeAttribute('disabled');
+  }
+}
+
+async function runGpuTraceProbe() {
+  const { samples, expected } = createTraceProbeBuffers();
+  traceButton.textContent = 'running WebGPU trace probe...';
+  traceButton.setAttribute('disabled', 'true');
+  try {
+    const result = await runWebGpuTraceProbe(samples, expected);
+    const traceLine = result.supported
+      ? `max diff ${(result.maxAbsDiff ?? Number.NaN).toExponential(3)}, ` +
+        `status mismatches ${result.statusMismatches ?? 0}, step mismatches ${result.stepMismatches ?? 0}`
+      : result.message;
+    setSummaryLine('gpu trace', traceLine);
+  } catch (error) {
+    setSummaryLine('gpu trace', `failed (${errorMessage(error)})`);
+  } finally {
+    traceButton.textContent = 'run WebGPU trace probe';
+    traceButton.removeAttribute('disabled');
   }
 }
 
@@ -351,6 +389,71 @@ function createStepProbeBuffers(): { samples: Float32Array; expected: Float32Arr
   return { samples, expected };
 }
 
+function createTraceProbeBuffers(): { samples: Float32Array; expected: Float32Array } {
+  const rows = [
+    {
+      position: { x: 3.4, y: 0, z: 0.4 },
+      spin: 0,
+      direction: { x: -1, y: 0.02, z: -0.05 },
+      options: { stepSize: 0.025, maxSteps: 96, escapeRadius: 18, singularityRadius: 0.2 },
+    },
+    {
+      position: { x: 8, y: 0.5, z: 1.2 },
+      spin: 0.45,
+      direction: { x: -0.15, y: 0.16, z: 1 },
+      options: { stepSize: 0.018, maxSteps: 48, escapeRadius: 18, singularityRadius: 0.2 },
+    },
+    {
+      position: { x: 5.5, y: -2.2, z: 0.8 },
+      spin: 0.7,
+      direction: { x: 0.8, y: -0.25, z: 0.15 },
+      options: { stepSize: 0.02, maxSteps: 120, escapeRadius: 6, singularityRadius: 0.2 },
+    },
+  ];
+  const samples = new Float32Array(rows.length * 16);
+  const expected = new Float32Array(rows.length * 12);
+  rows.forEach((row, index) => {
+    const params = kerrSchildParams(row.spin, 1);
+    const state: GeodesicState = {
+      position: { t: 0, ...row.position },
+      momentum: nullCovectorFromDirection({ t: 0, ...row.position }, row.direction, params),
+    };
+    const result = traceNullGeodesic(state, params, row.options);
+    const finalRadius = kerrSchildRadius(position3(result.state.position), params);
+    const sampleBase = index * 16;
+    const expectedBase = index * 12;
+    samples[sampleBase] = state.position.t;
+    samples[sampleBase + 1] = state.position.x;
+    samples[sampleBase + 2] = state.position.y;
+    samples[sampleBase + 3] = state.position.z;
+    samples[sampleBase + 4] = state.momentum.t;
+    samples[sampleBase + 5] = state.momentum.x;
+    samples[sampleBase + 6] = state.momentum.y;
+    samples[sampleBase + 7] = state.momentum.z;
+    samples[sampleBase + 8] = row.spin;
+    samples[sampleBase + 9] = row.options.stepSize;
+    samples[sampleBase + 10] = row.options.escapeRadius;
+    samples[sampleBase + 11] = row.options.singularityRadius;
+    samples[sampleBase + 12] = row.options.maxSteps;
+    samples[sampleBase + 13] = params.mass;
+    samples[sampleBase + 14] = 0;
+    samples[sampleBase + 15] = 0;
+    expected[expectedBase] = traceStatusToReadback(result.status);
+    expected[expectedBase + 1] = result.steps;
+    expected[expectedBase + 2] = finalRadius;
+    expected[expectedBase + 3] = result.maxHamiltonianDrift;
+    expected[expectedBase + 4] = result.state.position.t;
+    expected[expectedBase + 5] = result.state.position.x;
+    expected[expectedBase + 6] = result.state.position.y;
+    expected[expectedBase + 7] = result.state.position.z;
+    expected[expectedBase + 8] = result.state.momentum.t;
+    expected[expectedBase + 9] = result.state.momentum.x;
+    expected[expectedBase + 10] = result.state.momentum.y;
+    expected[expectedBase + 11] = result.state.momentum.z;
+  });
+  return { samples, expected };
+}
+
 function readbackRows(readback: Float32Array) {
   const rows = [];
   for (let i = 0; i < readback.length; i += READBACK_FLOATS_PER_RAY) {
@@ -377,6 +480,17 @@ function statusName(statusValue: number): string {
   if (statusValue === ReadbackStatus.MaxSteps) return 'max';
   if (statusValue === ReadbackStatus.Disk) return 'disk';
   return 'unknown';
+}
+
+function traceStatusToReadback(statusValue: TraceResult['status']): number {
+  if (statusValue === 'escaped') return ReadbackStatus.Escaped;
+  if (statusValue === 'horizon') return ReadbackStatus.Horizon;
+  if (statusValue === 'singularity') return ReadbackStatus.Singularity;
+  return ReadbackStatus.MaxSteps;
+}
+
+function position3(v: GeodesicState['position']) {
+  return { x: v.x, y: v.y, z: v.z };
 }
 
 function section(): HTMLElement {
