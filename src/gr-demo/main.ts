@@ -7,13 +7,15 @@ import {
   type TraceResult,
 } from '../gr/geodesic';
 import { refineDiskCrossing, type ThinDisk } from '../gr/disk';
-import { horizonRadius, kerrSchildNullSpatial, kerrSchildParams, kerrSchildRadius, kerrSchildScalar } from '../gr/kerrSchild';
+import { horizonRadius, kerrSchildNullSpatial, kerrSchildParams, kerrSchildRadius, kerrSchildScalar, type Vec4 } from '../gr/kerrSchild';
+import { sampleDiskRadiance, type DiskRadianceModel } from '../gr/radiance';
 import { probeGridToReadback, READBACK_FLOATS_PER_RAY, ReadbackStatus } from '../gr/readback';
 import { renderProbeGrid, type ProbeGrid } from '../gr/referenceProbe';
 import { buildObserverTetrad, staticObserverFourVelocity } from '../gr/tetrad';
 import { runWebGpuHamiltonianProbe } from './webgpuHamiltonianProbe';
 import { runWebGpuDiskProbe } from './webgpuDiskProbe';
 import { runWebGpuMetricProbe } from './webgpuMetricProbe';
+import { runWebGpuRadianceProbe } from './webgpuRadianceProbe';
 import { runWebGpuEchoReadback } from './webgpuReadback';
 import { runWebGpuStepProbe } from './webgpuStepProbe';
 import { runWebGpuTraceProbe } from './webgpuTraceProbe';
@@ -96,6 +98,13 @@ diskButton.style.cssText =
   'cursor:pointer;font:600 13px system-ui,sans-serif;margin:8px 0 0 0;';
 panel.appendChild(diskButton);
 
+const radianceButton = document.createElement('button');
+radianceButton.textContent = 'run WebGPU radiance probe';
+radianceButton.style.cssText =
+  'background:#2f3442;color:#e6eaf4;border:1px solid #4a5060;border-radius:6px;padding:8px 10px;' +
+  'cursor:pointer;font:600 13px system-ui,sans-serif;margin:8px 0 0 8px;';
+panel.appendChild(radianceButton);
+
 const summary = document.createElement('pre');
 summary.style.cssText = 'white-space:pre-wrap;margin:14px 0 0;color:#d7dbe5;';
 panel.appendChild(summary);
@@ -126,6 +135,9 @@ traceButton.addEventListener('click', () => {
 });
 diskButton.addEventListener('click', () => {
   void runGpuDiskProbe();
+});
+radianceButton.addEventListener('click', () => {
+  void runGpuRadianceProbe();
 });
 
 async function detectWebGpu() {
@@ -164,7 +176,8 @@ function renderCpuProbe() {
     'gpu Hamiltonian: not run\n' +
     'gpu step: not run\n' +
     'gpu trace: not run\n' +
-    'gpu disk: not run';
+    'gpu disk: not run\n' +
+    'gpu radiance: not run';
 
   table.textContent = [
     'px py status steps radius drift diskR redshift intensity rgb',
@@ -293,6 +306,26 @@ async function runGpuDiskProbe() {
   } finally {
     diskButton.textContent = 'run WebGPU disk probe';
     diskButton.removeAttribute('disabled');
+  }
+}
+
+async function runGpuRadianceProbe() {
+  const { samples, expected } = createRadianceProbeBuffers();
+  radianceButton.textContent = 'running WebGPU radiance probe...';
+  radianceButton.setAttribute('disabled', 'true');
+  try {
+    const result = await runWebGpuRadianceProbe(samples, expected);
+    const detail = result.output ? radianceProbeDetail(expected, result.output) : '';
+    const radianceLine = result.supported
+      ? `max diff ${(result.maxAbsDiff ?? Number.NaN).toExponential(3)}, ` +
+        `valid mismatches ${result.validMismatches ?? 0}${detail}`
+      : result.message;
+    setSummaryLine('gpu radiance', radianceLine);
+  } catch (error) {
+    setSummaryLine('gpu radiance', `failed (${errorMessage(error)})`);
+  } finally {
+    radianceButton.textContent = 'run WebGPU radiance probe';
+    radianceButton.removeAttribute('disabled');
   }
 }
 
@@ -556,6 +589,91 @@ function createDiskProbeBuffers(): { samples: Float32Array; expected: Float32Arr
   return { samples, expected };
 }
 
+function createRadianceProbeBuffers(): { samples: Float32Array; expected: Float32Array } {
+  const model: DiskRadianceModel = {
+    innerRadius: 3,
+    outerRadius: 18,
+    innerTemperature: 7200,
+    emissivityScale: 1.25,
+    boostPower: 4,
+  };
+  const rows: Array<{
+    position: { x: number; y: number; z: number };
+    spin: number;
+    direction: { x: number; y: number; z: number };
+    observerVelocity?: Vec4;
+    model: DiskRadianceModel;
+  }> = [
+    {
+      position: { x: 4, y: 0, z: 0 },
+      spin: 0.5,
+      direction: { x: 0, y: -1, z: 0 },
+      model,
+    },
+    {
+      position: { x: 12, y: 0, z: 0 },
+      spin: 0.5,
+      direction: { x: 0, y: -1, z: 0 },
+      model: { ...model, boostPower: 2 },
+    },
+    {
+      position: { x: 2, y: 0, z: 0 },
+      spin: 0,
+      direction: { x: 0, y: -1, z: 0 },
+      model,
+    },
+    {
+      position: { x: 8, y: 0, z: 0 },
+      spin: 0.55,
+      direction: { x: 0, y: -1, z: 0 },
+      observerVelocity: staticObserverFourVelocity({ x: 10, y: 0, z: 3 }, kerrSchildParams(0.55, 1)),
+      model: { ...model, spinDirection: -1 },
+    },
+  ];
+  const samples = new Float32Array(rows.length * 20);
+  const expected = new Float32Array(rows.length * 8);
+  rows.forEach((row, index) => {
+    const params = kerrSchildParams(row.spin, 1);
+    const position = { t: 0, ...row.position };
+    const state: GeodesicState = {
+      position,
+      momentum: nullCovectorFromDirection(position, row.direction, params),
+    };
+    const radiance = sampleDiskRadiance(state, params, row.model, row.observerVelocity);
+    const sampleBase = index * 20;
+    const expectedBase = index * 8;
+    samples[sampleBase] = state.position.t;
+    samples[sampleBase + 1] = state.position.x;
+    samples[sampleBase + 2] = state.position.y;
+    samples[sampleBase + 3] = state.position.z;
+    samples[sampleBase + 4] = state.momentum.t;
+    samples[sampleBase + 5] = state.momentum.x;
+    samples[sampleBase + 6] = state.momentum.y;
+    samples[sampleBase + 7] = state.momentum.z;
+    samples[sampleBase + 8] = row.observerVelocity?.t ?? 0;
+    samples[sampleBase + 9] = row.observerVelocity?.x ?? 0;
+    samples[sampleBase + 10] = row.observerVelocity?.y ?? 0;
+    samples[sampleBase + 11] = row.observerVelocity?.z ?? 0;
+    samples[sampleBase + 12] = params.spin;
+    samples[sampleBase + 13] = params.mass;
+    samples[sampleBase + 14] = row.model.innerRadius;
+    samples[sampleBase + 15] = row.model.outerRadius;
+    samples[sampleBase + 16] = row.model.innerTemperature;
+    samples[sampleBase + 17] = row.model.emissivityScale;
+    samples[sampleBase + 18] = row.model.boostPower;
+    samples[sampleBase + 19] = row.model.spinDirection ?? 1;
+    expected[expectedBase] = radiance ? 1 : 0;
+    expected[expectedBase + 1] = radiance?.radius ?? kerrSchildRadius(row.position, params);
+    expected[expectedBase + 2] = radiance?.temperature ?? 0;
+    expected[expectedBase + 3] = radiance?.redshift ?? 0;
+    expected[expectedBase + 4] = radiance?.bolometricIntensity ?? 0;
+    expected[expectedBase + 5] = radiance?.observedRgb[0] ?? 0;
+    expected[expectedBase + 6] = radiance?.observedRgb[1] ?? 0;
+    expected[expectedBase + 7] = radiance?.observedRgb[2] ?? 0;
+  });
+  return { samples, expected };
+}
+
 function readbackRows(readback: Float32Array) {
   const rows = [];
   for (let i = 0; i < readback.length; i += READBACK_FLOATS_PER_RAY) {
@@ -620,6 +738,28 @@ function formatVec4(values: Float32Array<ArrayBufferLike>, offset: number): stri
     values[offset + 2].toFixed(3),
     values[offset + 3].toExponential(1),
   ].join(', ');
+}
+
+function radianceProbeDetail(expected: Float32Array<ArrayBufferLike>, output: Float32Array<ArrayBufferLike>): string {
+  for (let i = 0; i < expected.length; i += 8) {
+    if (Math.round(expected[i]) !== Math.round(output[i])) {
+      return `, row ${i / 8} expected [${formatVecN(expected, i, 8)}] got [${formatVecN(output, i, 8)}]`;
+    }
+  }
+  let max = 0;
+  let offset = 0;
+  for (let i = 0; i < expected.length; i++) {
+    const diff = Math.abs(expected[i] - output[i]);
+    if (diff > max) {
+      max = diff;
+      offset = i - i % 8;
+    }
+  }
+  return max > 1e-2 ? `, max row ${offset / 8} expected [${formatVecN(expected, offset, 8)}] got [${formatVecN(output, offset, 8)}]` : '';
+}
+
+function formatVecN(values: Float32Array<ArrayBufferLike>, offset: number, length: number): string {
+  return Array.from({ length }, (_, i) => values[offset + i].toPrecision(4)).join(', ');
 }
 
 function section(): HTMLElement {
