@@ -6,6 +6,8 @@ import { COMPOSITE_INPUT_FLOATS_PER_RAY, COMPOSITE_OUTPUT_FLOATS_PER_RAY } from 
 import { launchPhotonFromTetrad, type GrTetrad } from './tetrad';
 import { type ProbeGrid } from './referenceProbe';
 
+export const COMPOSITE_CAMERA_UNIFORM_FLOATS = 64;
+
 export interface CompositeTraceOptions {
   stepSize: number;
   maxSteps: number;
@@ -40,6 +42,33 @@ export interface CompositeRaySample {
     outerRadius: number;
   };
   radianceModel: DiskRadianceModel;
+}
+
+export function createCompositeCameraUniforms(options: CompositeCameraSampleOptions): Float32Array {
+  const uniforms = new Float32Array(COMPOSITE_CAMERA_UNIFORM_FLOATS);
+  packVec4(uniforms, 0, { t: 0, x: options.position.x, y: options.position.y, z: options.position.z });
+  packVec4(uniforms, 4, options.observerVelocity);
+  packVec4(uniforms, 8, options.tetrad.eTime);
+  packVec4(uniforms, 12, options.tetrad.eRight);
+  packVec4(uniforms, 16, options.tetrad.eUp);
+  packVec4(uniforms, 20, options.tetrad.eForward);
+  uniforms[24] = options.params.spin;
+  uniforms[25] = options.traceOptions.stepSize;
+  uniforms[26] = options.traceOptions.escapeRadius;
+  uniforms[27] = options.traceOptions.singularityRadius;
+  uniforms[28] = options.traceOptions.maxSteps;
+  uniforms[29] = options.params.mass;
+  uniforms[30] = options.width;
+  uniforms[31] = options.height;
+  uniforms[32] = options.disk.innerRadius;
+  uniforms[33] = options.disk.outerRadius;
+  uniforms[34] = options.radianceModel.innerTemperature;
+  uniforms[35] = options.radianceModel.emissivityScale;
+  uniforms[36] = options.radianceModel.boostPower;
+  uniforms[37] = options.radianceModel.spinDirection ?? 1;
+  uniforms[38] = Math.tan(options.verticalFovRadians * 0.5);
+  uniforms[39] = options.width / options.height;
+  return uniforms;
 }
 
 export function createCompositeCameraSamples(options: CompositeCameraSampleOptions): Float32Array {
@@ -169,4 +198,11 @@ export function compositeSampleHamiltonian(
 function normalize3(v: Vec3): Vec3 {
   const length = Math.hypot(v.x, v.y, v.z) || 1;
   return { x: v.x / length, y: v.y / length, z: v.z / length };
+}
+
+function packVec4(target: Float32Array, offset: number, value: Vec4): void {
+  target[offset] = value.t;
+  target[offset + 1] = value.x;
+  target[offset + 2] = value.y;
+  target[offset + 3] = value.z;
 }

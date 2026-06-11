@@ -16,6 +16,7 @@ import {
   createCompositeCameraSamples,
   createCompositeExpectedFromProbeGrid,
   createCompositeSamplesFromProbeGrid,
+  type CompositeCameraSampleOptions,
 } from '../gr/compositeSamples';
 import {
   COMPOSITE_OUTPUT_FLOATS_PER_RAY,
@@ -23,6 +24,7 @@ import {
   compositeProbeDetail,
 } from '../gr/compositeReadback';
 import { runWebGpuComposite, runWebGpuCompositeProbe } from './webgpuCompositeProbe';
+import { runWebGpuCameraSampleProbe } from './webgpuCameraSampleProbe';
 import { runWebGpuHamiltonianProbe } from './webgpuHamiltonianProbe';
 import { runWebGpuDiskProbe } from './webgpuDiskProbe';
 import { runWebGpuMetricProbe } from './webgpuMetricProbe';
@@ -116,11 +118,18 @@ radianceButton.style.cssText =
   'cursor:pointer;font:600 13px system-ui,sans-serif;margin:8px 0 0 8px;';
 panel.appendChild(radianceButton);
 
+const cameraSampleButton = document.createElement('button');
+cameraSampleButton.textContent = 'run WebGPU camera sample probe';
+cameraSampleButton.style.cssText =
+  'background:#2f3442;color:#e6eaf4;border:1px solid #4a5060;border-radius:6px;padding:8px 10px;' +
+  'cursor:pointer;font:600 13px system-ui,sans-serif;margin:8px 0 0 0;';
+panel.appendChild(cameraSampleButton);
+
 const compositeButton = document.createElement('button');
 compositeButton.textContent = 'run WebGPU composite probe';
 compositeButton.style.cssText =
   'background:#2f3442;color:#e6eaf4;border:1px solid #4a5060;border-radius:6px;padding:8px 10px;' +
-  'cursor:pointer;font:600 13px system-ui,sans-serif;margin:8px 0 0 0;';
+  'cursor:pointer;font:600 13px system-ui,sans-serif;margin:8px 0 0 8px;';
 panel.appendChild(compositeButton);
 
 const previewButton = document.createElement('button');
@@ -172,6 +181,9 @@ diskButton.addEventListener('click', () => {
 radianceButton.addEventListener('click', () => {
   void runGpuRadianceProbe();
 });
+cameraSampleButton.addEventListener('click', () => {
+  void runGpuCameraSampleProbe();
+});
 compositeButton.addEventListener('click', () => {
   void runGpuCompositeProbe();
 });
@@ -217,6 +229,7 @@ function renderCpuProbe() {
     'gpu trace: not run\n' +
     'gpu disk: not run\n' +
     'gpu radiance: not run\n' +
+    'gpu camera samples: not run\n' +
     'gpu composite: not run\n' +
     'gpu preview: not run';
 
@@ -367,6 +380,26 @@ async function runGpuRadianceProbe() {
   } finally {
     radianceButton.textContent = 'run WebGPU radiance probe';
     radianceButton.removeAttribute('disabled');
+  }
+}
+
+async function runGpuCameraSampleProbe() {
+  const options = createCompositeCameraOptions(8, 5);
+  const expected = createCompositeCameraSamples(options);
+  cameraSampleButton.textContent = 'running WebGPU camera sample probe...';
+  cameraSampleButton.setAttribute('disabled', 'true');
+  try {
+    const result = await runWebGpuCameraSampleProbe(options, expected);
+    const cameraLine = result.supported
+      ? `max diff ${(result.maxAbsDiff ?? Number.NaN).toExponential(3)}, ` +
+        `momentum max diff ${(result.momentumMaxAbsDiff ?? Number.NaN).toExponential(3)}`
+      : result.message;
+    setSummaryLine('gpu camera samples', cameraLine);
+  } catch (error) {
+    setSummaryLine('gpu camera samples', `failed (${errorMessage(error)})`);
+  } finally {
+    cameraSampleButton.textContent = 'run WebGPU camera sample probe';
+    cameraSampleButton.removeAttribute('disabled');
   }
 }
 
@@ -807,6 +840,10 @@ function createCompositeProbeBuffers(): { samples: Float32Array; expected: Float
 }
 
 function createCompositeRenderSamples(width: number, height: number): Float32Array {
+  return createCompositeCameraSamples(createCompositeCameraOptions(width, height));
+}
+
+function createCompositeCameraOptions(width: number, height: number): CompositeCameraSampleOptions {
   const params = kerrSchildParams(0.55, 1);
   const position = { x: 10, y: 0, z: 3 };
   const observerVelocity = staticObserverFourVelocity(position, params);
@@ -825,7 +862,7 @@ function createCompositeRenderSamples(width: number, height: number): Float32Arr
     emissivityScale: 1,
     boostPower: 4,
   };
-  return createCompositeCameraSamples({
+  return {
     width,
     height,
     position,
@@ -836,7 +873,7 @@ function createCompositeRenderSamples(width: number, height: number): Float32Arr
     traceOptions,
     disk,
     radianceModel,
-  });
+  };
 }
 
 function readbackRows(readback: Float32Array) {
