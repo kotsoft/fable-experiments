@@ -29,6 +29,9 @@ interface WebGpuConstants {
     COPY_SRC: number;
     MAP_READ: number;
   };
+  GPUTextureUsage?: {
+    RENDER_ATTACHMENT: number;
+  };
   GPUMapMode?: {
     READ: number;
   };
@@ -370,6 +373,53 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
 
 const FLOAT_BYTES = Float32Array.BYTES_PER_ELEMENT;
 
+const PRESENT_SHADER = `
+struct CompositeOutput {
+  summary: vec4<f32>,
+  color: vec4<f32>,
+};
+
+struct RenderUniforms {
+  size: vec4<f32>,
+};
+
+struct VertexOutput {
+  @builtin(position) position: vec4<f32>,
+};
+
+@group(0) @binding(0) var<storage, read> outputData: array<CompositeOutput>;
+@group(0) @binding(1) var<uniform> render: RenderUniforms;
+
+@vertex
+fn vertex_main(@builtin(vertex_index) vertex_index: u32) -> VertexOutput {
+  var positions = array<vec2<f32>, 3>(
+    vec2<f32>(-1.0, -1.0),
+    vec2<f32>(3.0, -1.0),
+    vec2<f32>(-1.0, 3.0)
+  );
+  var out: VertexOutput;
+  out.position = vec4<f32>(positions[vertex_index], 0.0, 1.0);
+  return out;
+}
+
+fn display_map(value: f32) -> f32 {
+  let positive = max(value, 0.0);
+  let mapped = positive / (1.0 + positive);
+  return pow(mapped, 1.0 / 2.2);
+}
+
+@fragment
+fn fragment_main(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
+  let width = max(u32(render.size.x), 1u);
+  let height = max(u32(render.size.y), 1u);
+  let x = min(u32(position.x), width - 1u);
+  let y = min(u32(position.y), height - 1u);
+  let index = y * width + x;
+  let rgb = outputData[index].color.xyz;
+  return vec4<f32>(display_map(rgb.r), display_map(rgb.g), display_map(rgb.b), 1.0);
+}
+`;
+
 export async function runWebGpuCompositeProbe(
   samples: Float32Array<ArrayBufferLike>,
   expected: Float32Array<ArrayBufferLike>,
@@ -545,6 +595,148 @@ export async function runWebGpuCompositeFromCamera(
   return {
     supported: true,
     message: 'WebGPU camera-generated composite renderer completed',
+    output: outputCopy,
+  };
+}
+
+export async function renderWebGpuCompositeFromCameraToCanvas(
+  options: CompositeCameraSampleOptions,
+  canvas: HTMLCanvasElement,
+): Promise<WebGpuCompositeRunResult> {
+  const constants = globalThis as typeof globalThis & WebGpuConstants;
+  const usage = constants.GPUBufferUsage;
+  const textureUsage = constants.GPUTextureUsage;
+  const mapMode = constants.GPUMapMode;
+  if (!navigator.gpu || !usage || !textureUsage || !mapMode) {
+    return { supported: false, message: 'WebGPU globals are unavailable' };
+  }
+
+  const uniforms = createCompositeCameraUniforms(options);
+  const rayCount = options.width * options.height;
+  const sampleByteLength = rayCount * COMPOSITE_INPUT_FLOATS_PER_RAY * FLOAT_BYTES;
+  const outputByteLength = rayCount * COMPOSITE_OUTPUT_FLOATS_PER_RAY * FLOAT_BYTES;
+  const adapter = await navigator.gpu.requestAdapter();
+  if (!adapter) return { supported: false, message: 'No WebGPU adapter available' };
+  const device = await adapter.requestDevice();
+  const context = canvas.getContext('webgpu') as GPUCanvasContext | null;
+  if (!context) return { supported: false, message: 'Canvas WebGPU context is unavailable' };
+
+  if (canvas.width !== options.width) canvas.width = options.width;
+  if (canvas.height !== options.height) canvas.height = options.height;
+  const format = navigator.gpu.getPreferredCanvasFormat();
+  context.configure({
+    device,
+    format,
+    usage: textureUsage.RENDER_ATTACHMENT,
+    alphaMode: 'opaque',
+  });
+
+  const uniformBuffer = device.createBuffer({
+    size: COMPOSITE_CAMERA_UNIFORM_FLOATS * FLOAT_BYTES,
+    usage: usage.UNIFORM | usage.COPY_DST,
+  });
+  const renderUniformBuffer = device.createBuffer({
+    size: 4 * FLOAT_BYTES,
+    usage: usage.UNIFORM | usage.COPY_DST,
+  });
+  const samples = device.createBuffer({
+    size: sampleByteLength,
+    usage: usage.STORAGE,
+  });
+  const output = device.createBuffer({
+    size: outputByteLength,
+    usage: usage.STORAGE | usage.COPY_SRC,
+  });
+  const readback = device.createBuffer({
+    size: outputByteLength,
+    usage: usage.COPY_DST | usage.MAP_READ,
+  });
+
+  device.queue.writeBuffer(uniformBuffer, 0, uniforms);
+  device.queue.writeBuffer(renderUniformBuffer, 0, new Float32Array([options.width, options.height, 0, 0]));
+
+  const cameraModule = device.createShaderModule({ code: CAMERA_SAMPLE_SHADER });
+  const cameraPipeline = device.createComputePipeline({
+    layout: 'auto',
+    compute: { module: cameraModule, entryPoint: 'main' },
+  });
+  const cameraBindGroup = device.createBindGroup({
+    layout: cameraPipeline.getBindGroupLayout(0),
+    entries: [
+      { binding: 0, resource: { buffer: uniformBuffer } },
+      { binding: 1, resource: { buffer: samples } },
+    ],
+  });
+
+  const compositeModule = device.createShaderModule({ code: COMPOSITE_SHADER });
+  const compositePipeline = device.createComputePipeline({
+    layout: 'auto',
+    compute: { module: compositeModule, entryPoint: 'main' },
+  });
+  const compositeBindGroup = device.createBindGroup({
+    layout: compositePipeline.getBindGroupLayout(0),
+    entries: [
+      { binding: 0, resource: { buffer: samples } },
+      { binding: 1, resource: { buffer: output } },
+    ],
+  });
+
+  const presentModule = device.createShaderModule({ code: PRESENT_SHADER });
+  const presentPipeline = device.createRenderPipeline({
+    layout: 'auto',
+    vertex: { module: presentModule, entryPoint: 'vertex_main' },
+    fragment: {
+      module: presentModule,
+      entryPoint: 'fragment_main',
+      targets: [{ format }],
+    },
+  });
+  const presentBindGroup = device.createBindGroup({
+    layout: presentPipeline.getBindGroupLayout(0),
+    entries: [
+      { binding: 0, resource: { buffer: output } },
+      { binding: 1, resource: { buffer: renderUniformBuffer } },
+    ],
+  });
+
+  const encoder = device.createCommandEncoder();
+  const cameraPass = encoder.beginComputePass();
+  cameraPass.setPipeline(cameraPipeline);
+  cameraPass.setBindGroup(0, cameraBindGroup);
+  cameraPass.dispatchWorkgroups(Math.ceil(rayCount / 64));
+  cameraPass.end();
+
+  const compositePass = encoder.beginComputePass();
+  compositePass.setPipeline(compositePipeline);
+  compositePass.setBindGroup(0, compositeBindGroup);
+  compositePass.dispatchWorkgroups(Math.ceil(rayCount / 64));
+  compositePass.end();
+
+  const renderPass = encoder.beginRenderPass({
+    colorAttachments: [
+      {
+        view: context.getCurrentTexture().createView(),
+        clearValue: { r: 0, g: 0, b: 0, a: 1 },
+        loadOp: 'clear',
+        storeOp: 'store',
+      },
+    ],
+  });
+  renderPass.setPipeline(presentPipeline);
+  renderPass.setBindGroup(0, presentBindGroup);
+  renderPass.draw(3);
+  renderPass.end();
+
+  encoder.copyBufferToBuffer(output, 0, readback, 0, outputByteLength);
+  device.queue.submit([encoder.finish()]);
+
+  await readback.mapAsync(mapMode.READ);
+  const outputCopy = new Float32Array(readback.getMappedRange().slice(0));
+  readback.unmap();
+
+  return {
+    supported: true,
+    message: 'WebGPU camera-generated composite rendered to canvas',
     output: outputCopy,
   };
 }

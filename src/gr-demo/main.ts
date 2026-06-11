@@ -19,11 +19,10 @@ import {
   type CompositeCameraSampleOptions,
 } from '../gr/compositeSamples';
 import {
-  COMPOSITE_OUTPUT_FLOATS_PER_RAY,
   compositeOutputRows,
   compositeProbeDetail,
 } from '../gr/compositeReadback';
-import { runWebGpuCompositeFromCamera, runWebGpuCompositeProbe } from './webgpuCompositeProbe';
+import { renderWebGpuCompositeFromCameraToCanvas, runWebGpuCompositeProbe } from './webgpuCompositeProbe';
 import { runWebGpuCameraSampleProbe } from './webgpuCameraSampleProbe';
 import { runWebGpuHamiltonianProbe } from './webgpuHamiltonianProbe';
 import { runWebGpuDiskProbe } from './webgpuDiskProbe';
@@ -430,12 +429,11 @@ async function renderGpuPreview() {
   previewButton.textContent = 'rendering WebGPU preview...';
   previewButton.setAttribute('disabled', 'true');
   try {
-    const result = await runWebGpuCompositeFromCamera(options);
+    const result = await renderWebGpuCompositeFromCameraToCanvas(options, previewCanvas);
     if (!result.supported || !result.output) {
       setSummaryLine('gpu preview', result.message);
       return;
     }
-    drawCompositePreview(previewCanvas, width, height, result.output);
     const rows = compositeOutputRows(result.output);
     const diskHits = rows.filter((row) => row.status === ReadbackStatus.Disk).length;
     const horizons = rows.filter((row) => row.status === ReadbackStatus.Horizon).length;
@@ -958,33 +956,6 @@ function radianceProbeDetail(expected: Float32Array<ArrayBufferLike>, output: Fl
 
 function formatVecN(values: Float32Array<ArrayBufferLike>, offset: number, length: number): string {
   return Array.from({ length }, (_, i) => values[offset + i].toPrecision(4)).join(', ');
-}
-
-function drawCompositePreview(
-  canvas: HTMLCanvasElement,
-  width: number,
-  height: number,
-  output: Float32Array<ArrayBufferLike>,
-) {
-  if (canvas.width !== width) canvas.width = width;
-  if (canvas.height !== height) canvas.height = height;
-  const context = canvas.getContext('2d');
-  if (!context) return;
-  const image = context.createImageData(width, height);
-  for (let i = 0; i < width * height; i++) {
-    const row = i * COMPOSITE_OUTPUT_FLOATS_PER_RAY;
-    const pixel = i * 4;
-    image.data[pixel] = toDisplayByte(output[row + 4]);
-    image.data[pixel + 1] = toDisplayByte(output[row + 5]);
-    image.data[pixel + 2] = toDisplayByte(output[row + 6]);
-    image.data[pixel + 3] = 255;
-  }
-  context.putImageData(image, 0, 0);
-}
-
-function toDisplayByte(value: number): number {
-  const mapped = Math.max(0, value) / (1 + Math.max(0, value));
-  return Math.round(Math.pow(mapped, 1 / 2.2) * 255);
 }
 
 function section(): HTMLElement {
