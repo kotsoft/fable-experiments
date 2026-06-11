@@ -1,7 +1,9 @@
+import { hamiltonian, nullCovectorFromDirection } from '../gr/geodesic';
 import { horizonRadius, kerrSchildNullSpatial, kerrSchildParams, kerrSchildRadius, kerrSchildScalar } from '../gr/kerrSchild';
 import { probeGridToReadback, READBACK_FLOATS_PER_RAY, ReadbackStatus } from '../gr/readback';
 import { renderProbeGrid, type ProbeGrid } from '../gr/referenceProbe';
 import { buildObserverTetrad, staticObserverFourVelocity } from '../gr/tetrad';
+import { runWebGpuHamiltonianProbe } from './webgpuHamiltonianProbe';
 import { runWebGpuMetricProbe } from './webgpuMetricProbe';
 import { runWebGpuEchoReadback } from './webgpuReadback';
 
@@ -55,6 +57,13 @@ metricButton.style.cssText =
   'cursor:pointer;font:600 13px system-ui,sans-serif;margin:8px 0 0 0;';
 panel.appendChild(metricButton);
 
+const hamiltonianButton = document.createElement('button');
+hamiltonianButton.textContent = 'run WebGPU Hamiltonian probe';
+hamiltonianButton.style.cssText =
+  'background:#2f3442;color:#e6eaf4;border:1px solid #4a5060;border-radius:6px;padding:8px 10px;' +
+  'cursor:pointer;font:600 13px system-ui,sans-serif;margin:8px 0 0 8px;';
+panel.appendChild(hamiltonianButton);
+
 const summary = document.createElement('pre');
 summary.style.cssText = 'white-space:pre-wrap;margin:14px 0 0;color:#d7dbe5;';
 panel.appendChild(summary);
@@ -73,6 +82,9 @@ gpuButton.addEventListener('click', () => {
 });
 metricButton.addEventListener('click', () => {
   void runGpuMetricProbe();
+});
+hamiltonianButton.addEventListener('click', () => {
+  void runGpuHamiltonianProbe();
 });
 
 async function detectWebGpu() {
@@ -107,7 +119,8 @@ function renderCpuProbe() {
     `max |H drift|: ${maxDrift.toExponential(3)}\n` +
     `floats/ray: ${READBACK_FLOATS_PER_RAY}\n` +
     'gpu echo: not run\n' +
-    'gpu metric: not run';
+    'gpu metric: not run\n' +
+    'gpu Hamiltonian: not run';
 
   table.textContent = [
     'px py status steps radius drift diskR redshift intensity rgb',
@@ -164,6 +177,24 @@ async function runGpuMetricProbe() {
   }
 }
 
+async function runGpuHamiltonianProbe() {
+  const { samples, expected } = createHamiltonianProbeBuffers();
+  hamiltonianButton.textContent = 'running WebGPU Hamiltonian probe...';
+  hamiltonianButton.setAttribute('disabled', 'true');
+  try {
+    const result = await runWebGpuHamiltonianProbe(samples, expected);
+    const hLine = result.supported
+      ? `max diff ${(result.maxAbsDiff ?? Number.NaN).toExponential(3)}`
+      : result.message;
+    setSummaryLine('gpu Hamiltonian', hLine);
+  } catch (error) {
+    setSummaryLine('gpu Hamiltonian', `failed (${errorMessage(error)})`);
+  } finally {
+    hamiltonianButton.textContent = 'run WebGPU Hamiltonian probe';
+    hamiltonianButton.removeAttribute('disabled');
+  }
+}
+
 function createReferenceGrid(): ProbeGrid {
   const params = kerrSchildParams(0.55, 1);
   const position = { x: 10, y: 0, z: 3 };
@@ -211,6 +242,40 @@ function createMetricProbeBuffers(): { samples: Float32Array; expected: Float32A
     expected[base + 1] = kerrSchildScalar(row.position, params);
     expected[base + 2] = l.x * l.x + l.y * l.y + l.z * l.z;
     expected[base + 3] = horizonRadius(params);
+  });
+  return { samples, expected };
+}
+
+function createHamiltonianProbeBuffers(): { samples: Float32Array; expected: Float32Array } {
+  const rows = [
+    { position: { x: 8, y: 0, z: 1 }, spin: 0, direction: { x: -0.4, y: 0.1, z: 1 } },
+    { position: { x: 7, y: 2, z: -1.5 }, spin: 0.45, direction: { x: 0.2, y: -0.1, z: 1 } },
+    { position: { x: -4, y: 6, z: 2.25 }, spin: 0.75, direction: { x: -0.2, y: 0.3, z: 1 } },
+    { position: { x: 3.5, y: -2.5, z: 4 }, spin: 0.9, direction: { x: 0.35, y: 0.05, z: 1 } },
+  ];
+  const samples = new Float32Array(rows.length * 8);
+  const expected = new Float32Array(rows.length * 4);
+  rows.forEach((row, index) => {
+    const params = kerrSchildParams(row.spin, 1);
+    const position = { t: 0, ...row.position };
+    const momentum = nullCovectorFromDirection(position, row.direction, params);
+    const l = kerrSchildNullSpatial(row.position, params);
+    const radius = kerrSchildRadius(row.position, params);
+    const scalar = kerrSchildScalar(row.position, params);
+    const sampleBase = index * 8;
+    const expectedBase = index * 4;
+    samples[sampleBase] = row.position.x;
+    samples[sampleBase + 1] = row.position.y;
+    samples[sampleBase + 2] = row.position.z;
+    samples[sampleBase + 3] = row.spin;
+    samples[sampleBase + 4] = momentum.t;
+    samples[sampleBase + 5] = momentum.x;
+    samples[sampleBase + 6] = momentum.y;
+    samples[sampleBase + 7] = momentum.z;
+    expected[expectedBase] = hamiltonian({ position, momentum }, params);
+    expected[expectedBase + 1] = radius;
+    expected[expectedBase + 2] = scalar;
+    expected[expectedBase + 3] = l.x * l.x + l.y * l.y + l.z * l.z;
   });
   return { samples, expected };
 }
