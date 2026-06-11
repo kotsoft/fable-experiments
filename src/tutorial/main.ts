@@ -434,6 +434,129 @@ update();
 }
 
 // ============================================================
+// Diagram G (beaming primer): wavefronts from a moving source
+// ============================================================
+{
+  const g = ctx2d('dopplerWaves');
+  const W = 1280, H = 640;
+  const cy = H / 2;
+  g.clearRect(0, 0, W, H);
+
+  const beta = 0.5;
+  const N = 7;           // wavefronts emitted at t = 0..N-1, viewed at t = N
+  const u = 41;          // px per light-unit
+  const ox = W / 2 - 30; // where the source was at t = 0
+
+  for (let i = 0; i < N; i++) {
+    const cx = ox + beta * i * u;
+    const r = (N - i) * u;
+    g.beginPath();
+    g.arc(cx, cy, r, 0, Math.PI * 2);
+    g.strokeStyle = '#4a5060';
+    g.lineWidth = 1.4;
+    g.stroke();
+  }
+
+  // the source now, with its motion arrow
+  const sx = ox + beta * N * u;
+  g.beginPath();
+  g.arc(sx, cy, 8, 0, Math.PI * 2);
+  g.fillStyle = CSS.accent;
+  g.fill();
+  g.strokeStyle = CSS.accent;
+  g.fillStyle = CSS.accent;
+  g.lineWidth = 2.5;
+  g.beginPath();
+  g.moveTo(sx + 16, cy);
+  g.lineTo(sx + 52, cy);
+  g.stroke();
+  g.beginPath();
+  g.moveTo(sx + 64, cy);
+  g.lineTo(sx + 48, cy - 8);
+  g.lineTo(sx + 48, cy + 8);
+  g.closePath();
+  g.fill();
+
+  g.font = '22px system-ui';
+  g.textAlign = 'center';
+  g.fillStyle = '#6db9ff';
+  g.fillText('bunched ahead — bluer', ox + N * u, cy - N * u * 0.62 - 16);
+  g.fillStyle = '#e08070';
+  g.fillText('stretched behind — redder', ox - N * u * 0.55, cy + N * u * 0.62 + 32);
+}
+
+// ============================================================
+// Diagram H (beaming primer): relativistic aberration of rays
+// ============================================================
+{
+  const g = ctx2d('beamingArrows');
+  const W = 1280, H = 640;
+  g.clearRect(0, 0, W, H);
+
+  const beta = 0.5;
+  const R = 195;
+  const panels = [
+    { cx: 340, cy: 290, b: 0, label: 'at rest: glows evenly' },
+    { cx: 940, cy: 290, b: beta, label: 'at 0.5c: the same rays, thrown forward' },
+  ];
+
+  for (const p of panels) {
+    const pg = 1 / Math.sqrt(1 - p.b * p.b);
+    g.strokeStyle = CSS.fg;
+    g.fillStyle = CSS.fg;
+    g.lineWidth = 2;
+    for (let i = 0; i < 24; i++) {
+      const th = (i / 24) * Math.PI * 2;
+      // aberration: angles uniform in the blob's frame, seen from ours
+      const den = 1 + p.b * Math.cos(th);
+      const dx = (Math.cos(th) + p.b) / den;
+      const dy = Math.sin(th) / (pg * den);
+      const l = Math.hypot(dx, dy), ux = dx / l, uy = -dy / l;
+      // arrow length ~ Doppler boost (normalized sideways), so the lobe reads
+      const len = R * Math.pow(den, 0.75);
+      const x1 = p.cx + ux * 26, y1 = p.cy + uy * 26;
+      const x2 = p.cx + ux * len, y2 = p.cy + uy * len;
+      g.beginPath();
+      g.moveTo(x1, y1);
+      g.lineTo(x2, y2);
+      g.stroke();
+      g.beginPath();
+      g.moveTo(x2 + ux * 12, y2 + uy * 12);
+      g.lineTo(x2 - uy * 6, y2 + ux * 6);
+      g.lineTo(x2 + uy * 6, y2 - ux * 6);
+      g.closePath();
+      g.fill();
+    }
+    // the blob
+    g.beginPath();
+    g.arc(p.cx, p.cy, 12, 0, Math.PI * 2);
+    g.fillStyle = CSS.accent;
+    g.fill();
+    g.font = '22px system-ui';
+    g.textAlign = 'center';
+    g.fillStyle = CSS.dim;
+    g.fillText(p.label, p.cx, p.cy + R + 70);
+    g.fillStyle = CSS.fg;
+  }
+
+  // motion arrow under the moving panel
+  const mp = panels[1];
+  g.strokeStyle = CSS.accent;
+  g.fillStyle = CSS.accent;
+  g.lineWidth = 2.5;
+  g.beginPath();
+  g.moveTo(mp.cx + 24, mp.cy);
+  g.lineTo(mp.cx + 70, mp.cy);
+  g.stroke();
+  g.beginPath();
+  g.moveTo(mp.cx + 82, mp.cy);
+  g.lineTo(mp.cx + 66, mp.cy - 8);
+  g.lineTo(mp.cx + 66, mp.cy + 8);
+  g.closePath();
+  g.fill();
+}
+
+// ============================================================
 // Diagram C: side view — how the disk images form
 // ============================================================
 {

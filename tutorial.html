@@ -286,6 +286,55 @@ transmittance *= exp(-absorption * dt);</code></pre>
       </figure>
 
       <h2>6 — Redshift, Doppler, beaming</h2>
+
+      <details>
+        <summary>New to this? Sirens, headlights, and why moving gas glows brighter</summary>
+        <p>
+          You already know the main effect here — by ear. An ambulance siren sounds higher-pitched
+          rushing toward you and lower-pitched driving away. The siren never changes; the waves do.
+          A source moving toward you partly chases the waves it just emitted, so they arrive
+          bunched together. Moving away, it leaves them stretched out. Light works exactly the same
+          way: bunched light waves look <em>bluer</em>, stretched ones look <em>redder</em>.
+        </p>
+        <figure>
+          <canvas id="dopplerWaves" width="1280" height="640"></canvas>
+          <figcaption>
+            Wavefronts from a source moving at half the speed of light (positions computed, not
+            sketched). Every circle was emitted by the same source at an earlier moment.
+          </figcaption>
+        </figure>
+        <p>
+          Speed does a second, stranger thing. Think of running through rain that's falling
+          straight down: to you, it seems to slant into your face. Light aims the same way — for
+          a glowing blob moving near light speed, even the light it emits <em>sideways</em> gets
+          tilted forward, concentrating its glow into a cone pointing the way it moves. Physicists
+          call it the headlight effect. If the blob is heading toward you, far more of its light
+          reaches your eye, so it looks dramatically brighter; receding, dimmer.
+        </p>
+        <figure>
+          <canvas id="beamingArrows" width="1280" height="640"></canvas>
+          <figcaption>
+            The same blob, emitting light evenly in every direction in its own frame. Right: the
+            identical rays after relativistic aberration at half light speed (computed with the
+            exact formula) — they crowd toward the direction of motion, and each arrow's length
+            shows how strongly that ray is boosted.
+          </figcaption>
+        </figure>
+        <p>
+          Gravity adds a third shift: light climbing out of the hole's gravity well loses energy.
+          It can't slow down — light always travels at <var>c</var> — so it pays in color instead,
+          sliding toward red. (This is real and measurable: light sent between the floors of a
+          building on Earth shifts by a tiny, detectable amount.)
+        </p>
+        <p>
+          Now put all three together for the accretion disk. The gas orbits at half the speed of
+          light, so the side swinging toward the camera is blueshifted and beamed brighter, while
+          the receding side is reddened and dimmed — and everything pays the gravity toll on the
+          way out. The math below bundles all of it into a single factor <var>g</var>, and that's
+          the whole story of the lopsided ring in the last figure of this section.
+        </p>
+      </details>
+
       <p>
         Light leaving the disk is shifted twice: climbing out of the gravity well, and by the
         orbital motion of the gas. The combined factor between emitted and observed frequency is
