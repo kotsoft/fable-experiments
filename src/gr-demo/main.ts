@@ -12,7 +12,7 @@ import { sampleDiskRadiance, type DiskRadianceModel } from '../gr/radiance';
 import { probeGridToReadback, READBACK_FLOATS_PER_RAY, ReadbackStatus, statusToReadback } from '../gr/readback';
 import { renderProbeGrid, type ProbeGrid } from '../gr/referenceProbe';
 import { buildObserverTetrad, launchPhotonFromTetrad, staticObserverFourVelocity } from '../gr/tetrad';
-import { runWebGpuCompositeProbe } from './webgpuCompositeProbe';
+import { runWebGpuComposite, runWebGpuCompositeProbe } from './webgpuCompositeProbe';
 import { runWebGpuHamiltonianProbe } from './webgpuHamiltonianProbe';
 import { runWebGpuDiskProbe } from './webgpuDiskProbe';
 import { runWebGpuMetricProbe } from './webgpuMetricProbe';
@@ -113,9 +113,24 @@ compositeButton.style.cssText =
   'cursor:pointer;font:600 13px system-ui,sans-serif;margin:8px 0 0 0;';
 panel.appendChild(compositeButton);
 
+const previewButton = document.createElement('button');
+previewButton.textContent = 'render WebGPU preview';
+previewButton.style.cssText =
+  'background:#e8b873;color:#101114;border:0;border-radius:6px;padding:8px 10px;' +
+  'cursor:pointer;font:600 13px system-ui,sans-serif;margin:8px 0 0 8px;';
+panel.appendChild(previewButton);
+
 const summary = document.createElement('pre');
 summary.style.cssText = 'white-space:pre-wrap;margin:14px 0 0;color:#d7dbe5;';
 panel.appendChild(summary);
+
+const previewCanvas = document.createElement('canvas');
+previewCanvas.width = 64;
+previewCanvas.height = 36;
+previewCanvas.style.cssText =
+  'display:block;width:100%;max-width:960px;aspect-ratio:16/9;background:#000;margin:0 0 14px;' +
+  'image-rendering:pixelated;border:1px solid #252936;border-radius:6px;';
+output.appendChild(previewCanvas);
 
 const table = document.createElement('pre');
 table.style.cssText = 'white-space:pre;tab-size:2;margin:0;color:#cbd1df;';
@@ -149,6 +164,9 @@ radianceButton.addEventListener('click', () => {
 });
 compositeButton.addEventListener('click', () => {
   void runGpuCompositeProbe();
+});
+previewButton.addEventListener('click', () => {
+  void renderGpuPreview();
 });
 
 async function detectWebGpu() {
@@ -189,7 +207,8 @@ function renderCpuProbe() {
     'gpu trace: not run\n' +
     'gpu disk: not run\n' +
     'gpu radiance: not run\n' +
-    'gpu composite: not run';
+    'gpu composite: not run\n' +
+    'gpu preview: not run';
 
   table.textContent = [
     'px py status steps radius drift diskR redshift intensity rgb',
@@ -358,6 +377,35 @@ async function runGpuCompositeProbe() {
   } finally {
     compositeButton.textContent = 'run WebGPU composite probe';
     compositeButton.removeAttribute('disabled');
+  }
+}
+
+async function renderGpuPreview() {
+  const width = 64;
+  const height = 36;
+  const samples = createCompositeRenderSamples(width, height);
+  previewButton.textContent = 'rendering WebGPU preview...';
+  previewButton.setAttribute('disabled', 'true');
+  try {
+    const result = await runWebGpuComposite(samples);
+    if (!result.supported || !result.output) {
+      setSummaryLine('gpu preview', result.message);
+      return;
+    }
+    drawCompositePreview(previewCanvas, width, height, result.output);
+    const rows = compositeRows(result.output);
+    const diskHits = rows.filter((row) => row.status === ReadbackStatus.Disk).length;
+    const horizons = rows.filter((row) => row.status === ReadbackStatus.Horizon).length;
+    const maxDrift = Math.max(...rows.map((row) => row.drift));
+    setSummaryLine(
+      'gpu preview',
+      `${width} x ${height}, disk hits ${diskHits}, horizons ${horizons}, max drift ${maxDrift.toExponential(3)}`,
+    );
+  } catch (error) {
+    setSummaryLine('gpu preview', `failed (${errorMessage(error)})`);
+  } finally {
+    previewButton.textContent = 'render WebGPU preview';
+    previewButton.removeAttribute('disabled');
   }
 }
 
@@ -780,6 +828,69 @@ function createCompositeProbeBuffers(): { samples: Float32Array; expected: Float
   return { samples, expected };
 }
 
+function createCompositeRenderSamples(width: number, height: number): Float32Array {
+  const params = kerrSchildParams(0.55, 1);
+  const position = { x: 10, y: 0, z: 3 };
+  const observerVelocity = staticObserverFourVelocity(position, params);
+  const tetrad = buildObserverTetrad(position, params, observerVelocity);
+  const traceOptions = {
+    stepSize: 0.04,
+    maxSteps: 520,
+    escapeRadius: 32,
+    singularityRadius: 0.2,
+  };
+  const disk = { innerRadius: 3, outerRadius: 18 };
+  const radianceModel = {
+    innerRadius: 3,
+    outerRadius: 18,
+    innerTemperature: 7200,
+    emissivityScale: 1,
+    boostPower: 4,
+  };
+  const aspect = width / height;
+  const tanHalfFov = Math.tan(0.82 * 0.5);
+  const samples = new Float32Array(width * height * 28);
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const index = y * width + x;
+      const ndcX = (2 * (x + 0.5) / width - 1) * aspect;
+      const ndcY = 1 - 2 * (y + 0.5) / height;
+      const localDirection = normalize3({ x: ndcX * tanHalfFov, y: ndcY * tanHalfFov, z: 1 });
+      const momentum = launchPhotonFromTetrad(position, params, tetrad, localDirection);
+      const base = index * 28;
+      samples[base] = 0;
+      samples[base + 1] = position.x;
+      samples[base + 2] = position.y;
+      samples[base + 3] = position.z;
+      samples[base + 4] = momentum.t;
+      samples[base + 5] = momentum.x;
+      samples[base + 6] = momentum.y;
+      samples[base + 7] = momentum.z;
+      samples[base + 8] = observerVelocity.t;
+      samples[base + 9] = observerVelocity.x;
+      samples[base + 10] = observerVelocity.y;
+      samples[base + 11] = observerVelocity.z;
+      samples[base + 12] = params.spin;
+      samples[base + 13] = traceOptions.stepSize;
+      samples[base + 14] = traceOptions.escapeRadius;
+      samples[base + 15] = traceOptions.singularityRadius;
+      samples[base + 16] = traceOptions.maxSteps;
+      samples[base + 17] = params.mass;
+      samples[base + 18] = 0;
+      samples[base + 19] = 0;
+      samples[base + 20] = disk.innerRadius;
+      samples[base + 21] = disk.outerRadius;
+      samples[base + 22] = radianceModel.innerTemperature;
+      samples[base + 23] = radianceModel.emissivityScale;
+      samples[base + 24] = radianceModel.boostPower;
+      samples[base + 25] = 1;
+      samples[base + 26] = 0;
+      samples[base + 27] = 0;
+    }
+  }
+  return samples;
+}
+
 function readbackRows(readback: Float32Array) {
   const rows = [];
   for (let i = 0; i < readback.length; i += READBACK_FLOATS_PER_RAY) {
@@ -884,6 +995,53 @@ function compositeProbeDetail(expected: Float32Array<ArrayBufferLike>, output: F
 
 function formatVecN(values: Float32Array<ArrayBufferLike>, offset: number, length: number): string {
   return Array.from({ length }, (_, i) => values[offset + i].toPrecision(4)).join(', ');
+}
+
+function drawCompositePreview(
+  canvas: HTMLCanvasElement,
+  width: number,
+  height: number,
+  output: Float32Array<ArrayBufferLike>,
+) {
+  if (canvas.width !== width) canvas.width = width;
+  if (canvas.height !== height) canvas.height = height;
+  const context = canvas.getContext('2d');
+  if (!context) return;
+  const image = context.createImageData(width, height);
+  for (let i = 0; i < width * height; i++) {
+    const row = i * 8;
+    const pixel = i * 4;
+    image.data[pixel] = toDisplayByte(output[row + 4]);
+    image.data[pixel + 1] = toDisplayByte(output[row + 5]);
+    image.data[pixel + 2] = toDisplayByte(output[row + 6]);
+    image.data[pixel + 3] = 255;
+  }
+  context.putImageData(image, 0, 0);
+}
+
+function toDisplayByte(value: number): number {
+  const mapped = Math.max(0, value) / (1 + Math.max(0, value));
+  return Math.round(Math.pow(mapped, 1 / 2.2) * 255);
+}
+
+function compositeRows(output: Float32Array<ArrayBufferLike>) {
+  const rows = [];
+  for (let i = 0; i < output.length; i += 8) {
+    rows.push({
+      status: output[i],
+      steps: output[i + 1],
+      radius: output[i + 2],
+      diskRadius: output[i + 3],
+      color: [output[i + 4], output[i + 5], output[i + 6]],
+      drift: output[i + 7],
+    });
+  }
+  return rows;
+}
+
+function normalize3(v: { x: number; y: number; z: number }) {
+  const length = Math.hypot(v.x, v.y, v.z) || 1;
+  return { x: v.x / length, y: v.y / length, z: v.z / length };
 }
 
 function section(): HTMLElement {

@@ -19,6 +19,12 @@ interface WebGpuConstants {
   };
 }
 
+export interface WebGpuCompositeRunResult {
+  supported: boolean;
+  message: string;
+  output?: Float32Array;
+}
+
 const COMPOSITE_SHADER = `
 struct RaySample {
   position: vec4<f32>,
@@ -351,6 +357,25 @@ export async function runWebGpuCompositeProbe(
   samples: Float32Array<ArrayBufferLike>,
   expected: Float32Array<ArrayBufferLike>,
 ): Promise<WebGpuCompositeProbeResult> {
+  const expectedCopy = new Float32Array(expected);
+  const raw = await runWebGpuComposite(samples);
+  if (!raw.supported || !raw.output) {
+    return { supported: raw.supported, message: raw.message };
+  }
+
+  return {
+    supported: true,
+    message: 'WebGPU composite probe matched CPU reference',
+    output: raw.output,
+    maxAbsDiff: maxAbsDiff(expectedCopy, raw.output),
+    statusMismatches: mismatchCount(expectedCopy, raw.output, 8, 0),
+    diskMismatches: mismatchCount(expectedCopy, raw.output, 8, 3),
+  };
+}
+
+export async function runWebGpuComposite(
+  samples: Float32Array<ArrayBufferLike>,
+): Promise<WebGpuCompositeRunResult> {
   const constants = globalThis as typeof globalThis & WebGpuConstants;
   const usage = constants.GPUBufferUsage;
   const mapMode = constants.GPUMapMode;
@@ -359,7 +384,7 @@ export async function runWebGpuCompositeProbe(
   }
 
   const inputCopy = new Float32Array(samples);
-  const expectedCopy = new Float32Array(expected);
+  const outputByteLength = inputCopy.length / 28 * 8 * Float32Array.BYTES_PER_ELEMENT;
   const adapter = await navigator.gpu.requestAdapter();
   if (!adapter) return { supported: false, message: 'No WebGPU adapter available' };
   const device = await adapter.requestDevice();
@@ -369,11 +394,11 @@ export async function runWebGpuCompositeProbe(
     usage: usage.STORAGE | usage.COPY_DST,
   });
   const output = device.createBuffer({
-    size: expectedCopy.byteLength,
+    size: outputByteLength,
     usage: usage.STORAGE | usage.COPY_SRC,
   });
   const readback = device.createBuffer({
-    size: expectedCopy.byteLength,
+    size: outputByteLength,
     usage: usage.COPY_DST | usage.MAP_READ,
   });
 
@@ -398,7 +423,7 @@ export async function runWebGpuCompositeProbe(
   pass.setBindGroup(0, bindGroup);
   pass.dispatchWorkgroups(Math.ceil(inputCopy.length / 28 / 64));
   pass.end();
-  encoder.copyBufferToBuffer(output, 0, readback, 0, expectedCopy.byteLength);
+  encoder.copyBufferToBuffer(output, 0, readback, 0, outputByteLength);
   device.queue.submit([encoder.finish()]);
 
   await readback.mapAsync(mapMode.READ);
@@ -407,11 +432,8 @@ export async function runWebGpuCompositeProbe(
 
   return {
     supported: true,
-    message: 'WebGPU composite probe matched CPU reference',
+    message: 'WebGPU composite renderer completed',
     output: outputCopy,
-    maxAbsDiff: maxAbsDiff(expectedCopy, outputCopy),
-    statusMismatches: mismatchCount(expectedCopy, outputCopy, 8, 0),
-    diskMismatches: mismatchCount(expectedCopy, outputCopy, 8, 3),
   };
 }
 
