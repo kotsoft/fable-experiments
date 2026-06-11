@@ -81,6 +81,24 @@ const heightInput = controlRange('height', -8, 8, 0.25, 3);
 const yawInput = controlRange('look yaw', -60, 60, 1, 0);
 const pitchInput = controlRange('look pitch', -35, 35, 1, 0);
 const fovInput = controlRange('fov', 35, 85, 1, 47);
+const diskInnerInput = controlRange('disk inner', 1.4, 8, 0.1, 3);
+const diskOuterInput = controlRange('disk outer', 6, 30, 0.5, 18);
+const diskTempInput = controlRange('disk temp', 3000, 18000, 250, 7200);
+const diskEmissionInput = controlRange('disk emission', 0.1, 4, 0.05, 1);
+const diskBoostInput = controlRange('disk boost', 0, 6, 0.1, 4);
+const diskDirectionSelect = document.createElement('select');
+diskDirectionSelect.style.cssText =
+  'background:#171a22;color:#e6eaf4;border:1px solid #3b4150;border-radius:5px;padding:5px;font:13px ui-monospace,monospace;';
+[
+  ['prograde', '1'],
+  ['retrograde', '-1'],
+].forEach(([label, value]) => {
+  const option = document.createElement('option');
+  option.textContent = label;
+  option.value = value;
+  diskDirectionSelect.appendChild(option);
+});
+controls.appendChild(labeledControl('disk orbit', diskDirectionSelect));
 const resolutionSelect = document.createElement('select');
 resolutionSelect.style.cssText =
   'background:#171a22;color:#e6eaf4;border:1px solid #3b4150;border-radius:5px;padding:5px;font:13px ui-monospace,monospace;';
@@ -234,9 +252,15 @@ previewButton.addEventListener('click', () => {
   yawInput.input,
   pitchInput.input,
   fovInput.input,
+  diskInnerInput.input,
+  diskOuterInput.input,
+  diskTempInput.input,
+  diskEmissionInput.input,
+  diskBoostInput.input,
 ].forEach((input) => {
   input.addEventListener('input', () => scheduleGpuPreviewRender());
 });
+diskDirectionSelect.addEventListener('change', () => scheduleGpuPreviewRender());
 resolutionSelect.addEventListener('change', () => scheduleGpuPreviewRender(0));
 installPreviewDragControls();
 scheduleGpuPreviewRender(80);
@@ -499,6 +523,8 @@ async function renderGpuPreview() {
       `${width} x ${height}, spin ${options.params.spin.toFixed(2)}, ` +
         `r ${options.position.x.toFixed(2)}, z ${options.position.z.toFixed(2)}, ` +
         `yaw ${yawInput.input.value}, pitch ${pitchInput.input.value}, ` +
+        `disk ${options.disk.innerRadius.toFixed(1)}-${options.disk.outerRadius.toFixed(1)}, ` +
+        `temp ${options.radianceModel.innerTemperature.toFixed(0)}, ` +
         `disk hits ${diskHits}, horizons ${horizons}, max drift ${maxDrift.toExponential(3)}`,
     );
   } catch (error) {
@@ -582,6 +608,7 @@ function createReferenceGrid(): ProbeGrid {
   const params = kerrSchildParams(0.55, 1);
   const position = { x: 10, y: 0, z: 3 };
   const tetrad = buildObserverTetrad(position, params, staticObserverFourVelocity(position, params));
+  const { disk, radianceModel } = selectedDiskModel();
   return renderProbeGrid(
     params,
     { position, tetrad, verticalFovRadians: 0.82 },
@@ -593,14 +620,8 @@ function createReferenceGrid(): ProbeGrid {
       escapeRadius: 32,
       singularityRadius: 0.2,
     },
-    { innerRadius: 3, outerRadius: 18 },
-    {
-      innerRadius: 3,
-      outerRadius: 18,
-      innerTemperature: 7200,
-      emissivityScale: 1,
-      boostPower: 4,
-    },
+    disk,
+    radianceModel,
   );
 }
 
@@ -977,14 +998,7 @@ function createCompositeCameraOptions(width: number, height: number): CompositeC
     escapeRadius: 32,
     singularityRadius: 0.2,
   };
-  const disk = { innerRadius: 3, outerRadius: 18 };
-  const radianceModel = {
-    innerRadius: 3,
-    outerRadius: 18,
-    innerTemperature: 7200,
-    emissivityScale: 1,
-    boostPower: 4,
-  };
+  const { disk, radianceModel } = selectedDiskModel();
   return {
     width,
     height,
@@ -996,6 +1010,23 @@ function createCompositeCameraOptions(width: number, height: number): CompositeC
     traceOptions,
     disk,
     radianceModel,
+  };
+}
+
+function selectedDiskModel(): { disk: ThinDisk; radianceModel: DiskRadianceModel } {
+  const innerRadius = Number(diskInnerInput.input.value);
+  const outerRadius = Math.max(innerRadius + 0.5, Number(diskOuterInput.input.value));
+  const spinDirection = diskDirectionSelect.value === '-1' ? -1 : 1;
+  return {
+    disk: { innerRadius, outerRadius },
+    radianceModel: {
+      innerRadius,
+      outerRadius,
+      innerTemperature: Number(diskTempInput.input.value),
+      emissivityScale: Number(diskEmissionInput.input.value),
+      boostPower: Number(diskBoostInput.input.value),
+      spinDirection,
+    },
   };
 }
 
