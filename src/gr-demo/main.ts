@@ -2,6 +2,7 @@ import { kerrSchildParams } from '../gr/kerrSchild';
 import { probeGridToReadback, READBACK_FLOATS_PER_RAY, ReadbackStatus } from '../gr/readback';
 import { renderProbeGrid, type ProbeGrid } from '../gr/referenceProbe';
 import { buildObserverTetrad, staticObserverFourVelocity } from '../gr/tetrad';
+import { runWebGpuEchoReadback } from './webgpuReadback';
 
 type GpuNavigator = Navigator & {
   gpu?: {
@@ -39,6 +40,13 @@ runButton.style.cssText =
   'background:#e8b873;color:#101114;border:0;border-radius:6px;padding:8px 10px;cursor:pointer;font:600 13px system-ui,sans-serif;';
 panel.appendChild(runButton);
 
+const gpuButton = document.createElement('button');
+gpuButton.textContent = 'run WebGPU readback echo';
+gpuButton.style.cssText =
+  'background:#2f3442;color:#e6eaf4;border:1px solid #4a5060;border-radius:6px;padding:8px 10px;' +
+  'cursor:pointer;font:600 13px system-ui,sans-serif;margin-left:8px;';
+panel.appendChild(gpuButton);
+
 const summary = document.createElement('pre');
 summary.style.cssText = 'white-space:pre-wrap;margin:14px 0 0;color:#d7dbe5;';
 panel.appendChild(summary);
@@ -47,9 +55,14 @@ const table = document.createElement('pre');
 table.style.cssText = 'white-space:pre;tab-size:2;margin:0;color:#cbd1df;';
 output.appendChild(table);
 
+let latestReadback: Float32Array<ArrayBufferLike> = new Float32Array();
+
 void detectWebGpu();
 renderCpuProbe();
 runButton.addEventListener('click', renderCpuProbe);
+gpuButton.addEventListener('click', () => {
+  void runGpuEcho();
+});
 
 async function detectWebGpu() {
   const gpu = (navigator as GpuNavigator).gpu;
@@ -71,6 +84,7 @@ async function detectWebGpu() {
 function renderCpuProbe() {
   const grid = createReferenceGrid();
   const readback = probeGridToReadback(grid);
+  latestReadback = readback;
   const rows = readbackRows(readback);
   const diskHits = rows.filter((row) => row.status === ReadbackStatus.Disk);
   const maxDrift = Math.max(...rows.map((row) => row.maxHamiltonianDrift));
@@ -80,7 +94,8 @@ function renderCpuProbe() {
     `rays: ${grid.rays.length}\n` +
     `disk hits: ${diskHits.length}\n` +
     `max |H drift|: ${maxDrift.toExponential(3)}\n` +
-    `floats/ray: ${READBACK_FLOATS_PER_RAY}`;
+    `floats/ray: ${READBACK_FLOATS_PER_RAY}\n` +
+    'gpu echo: not run';
 
   table.textContent = [
     'px py status steps radius drift diskR redshift intensity rgb',
@@ -99,6 +114,24 @@ function renderCpuProbe() {
       ].join('\t'),
     ),
   ].join('\n');
+}
+
+async function runGpuEcho() {
+  if (latestReadback.length === 0) renderCpuProbe();
+  gpuButton.textContent = 'running WebGPU echo...';
+  gpuButton.setAttribute('disabled', 'true');
+  try {
+    const result = await runWebGpuEchoReadback(latestReadback);
+    const gpuLine = result.supported
+      ? `max diff ${(result.maxAbsDiff ?? Number.NaN).toExponential(3)}`
+      : result.message;
+    setGpuEchoLine(gpuLine);
+  } catch (error) {
+    setGpuEchoLine(`failed (${errorMessage(error)})`);
+  } finally {
+    gpuButton.textContent = 'run WebGPU readback echo';
+    gpuButton.removeAttribute('disabled');
+  }
 }
 
 function createReferenceGrid(): ProbeGrid {
@@ -159,4 +192,13 @@ function section(): HTMLElement {
   const el = document.createElement('section');
   el.style.cssText = 'background:#101218;border:1px solid #252936;border-radius:8px;padding:14px;';
   return el;
+}
+
+function setGpuEchoLine(text: string) {
+  const current = summary.textContent ?? '';
+  summary.textContent = current.replace(/\ngpu echo: .*/, '') + `\ngpu echo: ${text}`;
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
