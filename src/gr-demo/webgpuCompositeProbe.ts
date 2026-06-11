@@ -43,6 +43,10 @@ export interface WebGpuCompositeRunResult {
   output?: Float32Array;
 }
 
+export interface WebGpuCompositeCanvasOptions {
+  readback?: boolean;
+}
+
 const COMPOSITE_SHADER = `
 struct RaySample {
   position: vec4<f32>,
@@ -642,6 +646,7 @@ export async function runWebGpuCompositeFromCamera(
 export async function renderWebGpuCompositeFromCameraToCanvas(
   options: CompositeCameraSampleOptions,
   canvas: HTMLCanvasElement,
+  canvasOptions: WebGpuCompositeCanvasOptions = {},
 ): Promise<WebGpuCompositeRunResult> {
   const constants = globalThis as typeof globalThis & WebGpuConstants;
   const usage = constants.GPUBufferUsage;
@@ -694,8 +699,18 @@ export async function renderWebGpuCompositeFromCameraToCanvas(
   renderPass.draw(3);
   renderPass.end();
 
-  encoder.copyBufferToBuffer(resources.output, 0, resources.readback, 0, resources.outputByteLength);
+  const shouldReadBack = canvasOptions.readback ?? true;
+  if (shouldReadBack) {
+    encoder.copyBufferToBuffer(resources.output, 0, resources.readback, 0, resources.outputByteLength);
+  }
   device.queue.submit([encoder.finish()]);
+
+  if (!shouldReadBack) {
+    return {
+      supported: true,
+      message: 'WebGPU camera-generated composite rendered to canvas',
+    };
+  }
 
   await resources.readback.mapAsync(mapMode.READ);
   const outputCopy = new Float32Array(resources.readback.getMappedRange().slice(0));

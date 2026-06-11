@@ -260,8 +260,11 @@ let latestReadback: Float32Array<ArrayBufferLike> = new Float32Array();
 let previewRenderTimer: number | undefined;
 let isPreviewRendering = false;
 let hasPendingPreviewRender = false;
+let pendingPreviewReadback = true;
 let diskAnimationTimer: number | undefined;
 let isDiskAnimating = true;
+let latestPreviewStats: { diskHits: number; horizons: number; maxDrift: number } | undefined;
+let animationFramesSinceReadback = 0;
 
 void detectWebGpu();
 renderCpuProbe();
@@ -294,7 +297,7 @@ compositeButton.addEventListener('click', () => {
   void runGpuCompositeProbe();
 });
 previewButton.addEventListener('click', () => {
-  void renderGpuPreview();
+  void renderGpuPreview(true);
 });
 animationButton.addEventListener('click', () => {
   setDiskAnimationEnabled(!isDiskAnimating);
@@ -313,14 +316,14 @@ animationButton.addEventListener('click', () => {
   diskBoostInput.input,
   diskPhaseInput.input,
 ].forEach((input) => {
-  input.addEventListener('input', () => scheduleGpuPreviewRender());
+  input.addEventListener('input', () => scheduleGpuPreviewRender(220, true));
 });
-diskDirectionSelect.addEventListener('change', () => scheduleGpuPreviewRender());
-resolutionSelect.addEventListener('change', () => scheduleGpuPreviewRender(0));
-qualitySelect.addEventListener('change', () => scheduleGpuPreviewRender(0));
+diskDirectionSelect.addEventListener('change', () => scheduleGpuPreviewRender(220, true));
+resolutionSelect.addEventListener('change', () => scheduleGpuPreviewRender(0, true));
+qualitySelect.addEventListener('change', () => scheduleGpuPreviewRender(0, true));
 installPreviewDragControls();
 setDiskAnimationEnabled(true);
-scheduleGpuPreviewRender(80);
+scheduleGpuPreviewRender(80, true);
 
 async function detectWebGpu() {
   const gpu = (navigator as GpuNavigator).gpu;
@@ -554,36 +557,37 @@ async function runGpuCompositeProbe() {
   }
 }
 
-async function renderGpuPreview() {
+async function renderGpuPreview(requireReadback = false) {
   if (isPreviewRendering) {
     hasPendingPreviewRender = true;
+    pendingPreviewReadback = pendingPreviewReadback || requireReadback;
     return;
   }
   isPreviewRendering = true;
   hasPendingPreviewRender = false;
+  const shouldReadBack = requireReadback || pendingPreviewReadback;
+  pendingPreviewReadback = false;
   const { width, height } = selectedResolution();
   const options = createCompositeCameraOptions(width, height);
   previewButton.textContent = 'rendering WebGPU view...';
   previewButton.setAttribute('disabled', 'true');
   try {
-    const result = await renderWebGpuCompositeFromCameraToCanvas(options, previewCanvas);
-    if (!result.supported || !result.output) {
+    const result = await renderWebGpuCompositeFromCameraToCanvas(options, previewCanvas, { readback: shouldReadBack });
+    if (!result.supported) {
       setSummaryLine('gpu preview', result.message);
       previewReadout.textContent = result.message;
       return;
     }
-    const rows = compositeOutputRows(result.output);
-    const diskHits = rows.filter((row) => row.status === ReadbackStatus.Disk).length;
-    const horizons = rows.filter((row) => row.status === ReadbackStatus.Horizon).length;
-    const maxDrift = Math.max(...rows.map((row) => row.drift));
-    const previewLine = `${width} x ${height}, spin ${options.params.spin.toFixed(2)}, ` +
-      `r ${options.position.x.toFixed(2)}, z ${options.position.z.toFixed(2)}, ` +
-      `yaw ${yawInput.input.value}, pitch ${pitchInput.input.value}, ` +
-      `disk ${options.disk.innerRadius.toFixed(1)}-${options.disk.outerRadius.toFixed(1)}, ` +
-      `temp ${options.radianceModel.innerTemperature.toFixed(0)}, ` +
-      `phase ${(options.radianceModel.emissionPhase ?? 0).toFixed(2)}, ` +
-      `quality ${qualitySelect.value} (${options.traceOptions.stepSize.toFixed(3)} x ${options.traceOptions.maxSteps}), ` +
-      `disk hits ${diskHits}, horizons ${horizons}, max drift ${maxDrift.toExponential(3)}`;
+    if (result.output) {
+      const rows = compositeOutputRows(result.output);
+      latestPreviewStats = {
+        diskHits: rows.filter((row) => row.status === ReadbackStatus.Disk).length,
+        horizons: rows.filter((row) => row.status === ReadbackStatus.Horizon).length,
+        maxDrift: Math.max(...rows.map((row) => row.drift)),
+      };
+      animationFramesSinceReadback = 0;
+    }
+    const previewLine = formatPreviewLine(width, height, options, latestPreviewStats, shouldReadBack);
     previewReadout.textContent = previewLine;
     setSummaryLine('gpu preview', previewLine);
   } catch (error) {
@@ -595,12 +599,13 @@ async function renderGpuPreview() {
     previewButton.removeAttribute('disabled');
     isPreviewRendering = false;
     if (hasPendingPreviewRender) {
-      scheduleGpuPreviewRender(0);
+      scheduleGpuPreviewRender(0, pendingPreviewReadback);
     }
   }
 }
 
-function scheduleGpuPreviewRender(delay = 220): void {
+function scheduleGpuPreviewRender(delay = 220, requireReadback = true): void {
+  pendingPreviewReadback = pendingPreviewReadback || requireReadback;
   if (previewRenderTimer !== undefined) {
     window.clearTimeout(previewRenderTimer);
   }
@@ -608,6 +613,27 @@ function scheduleGpuPreviewRender(delay = 220): void {
     previewRenderTimer = undefined;
     void renderGpuPreview();
   }, delay);
+}
+
+function formatPreviewLine(
+  width: number,
+  height: number,
+  options: CompositeCameraSampleOptions,
+  stats: { diskHits: number; horizons: number; maxDrift: number } | undefined,
+  refreshedStats: boolean,
+): string {
+  const statsLine = stats
+    ? `disk hits ${stats.diskHits}, horizons ${stats.horizons}, max drift ${stats.maxDrift.toExponential(3)}`
+    : 'stats pending';
+  const statsAge = refreshedStats ? '' : ' (cached stats)';
+  return `${width} x ${height}, spin ${options.params.spin.toFixed(2)}, ` +
+    `r ${options.position.x.toFixed(2)}, z ${options.position.z.toFixed(2)}, ` +
+    `yaw ${yawInput.input.value}, pitch ${pitchInput.input.value}, ` +
+    `disk ${options.disk.innerRadius.toFixed(1)}-${options.disk.outerRadius.toFixed(1)}, ` +
+    `temp ${options.radianceModel.innerTemperature.toFixed(0)}, ` +
+    `phase ${(options.radianceModel.emissionPhase ?? 0).toFixed(2)}, ` +
+    `quality ${qualitySelect.value} (${options.traceOptions.stepSize.toFixed(3)} x ${options.traceOptions.maxSteps}), ` +
+    `${statsLine}${statsAge}`;
 }
 
 function setDiskAnimationEnabled(enabled: boolean): void {
@@ -621,8 +647,10 @@ function setDiskAnimationEnabled(enabled: boolean): void {
   diskAnimationTimer = window.setInterval(() => {
     const direction = diskDirectionSelect.value === '-1' ? -1 : 1;
     const nextPhase = Number(diskPhaseInput.input.value) + direction * 0.12;
-    setWrappedRangeValue(diskPhaseInput.input, nextPhase);
-    scheduleGpuPreviewRender(0);
+    setWrappedRangeValue(diskPhaseInput.input, nextPhase, false);
+    diskPhaseInput.valueEl.textContent = formatControlValue(Number(diskPhaseInput.input.value));
+    animationFramesSinceReadback += 1;
+    scheduleGpuPreviewRender(0, animationFramesSinceReadback >= 8);
   }, 320);
 }
 
@@ -671,22 +699,24 @@ function installPreviewDragControls(): void {
   }
 }
 
-function setRangeValue(input: HTMLInputElement, value: number): void {
+function setRangeValue(input: HTMLInputElement, value: number, emitInput = true): void {
   const min = Number(input.min);
   const max = Number(input.max);
   const step = Number(input.step) || 1;
   const clamped = Math.min(max, Math.max(min, value));
   const snapped = Math.round(clamped / step) * step;
   input.value = String(Number(snapped.toFixed(4)));
-  input.dispatchEvent(new Event('input', { bubbles: true }));
+  if (emitInput) {
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+  }
 }
 
-function setWrappedRangeValue(input: HTMLInputElement, value: number): void {
+function setWrappedRangeValue(input: HTMLInputElement, value: number, emitInput = true): void {
   const min = Number(input.min);
   const max = Number(input.max);
   const span = max - min;
   const wrapped = ((value - min) % span + span) % span + min;
-  setRangeValue(input, wrapped);
+  setRangeValue(input, wrapped, emitInput);
 }
 
 function createReferenceGrid(): ProbeGrid {
