@@ -68,6 +68,7 @@ export function createCompositeCameraUniforms(options: CompositeCameraSampleOpti
   uniforms[37] = options.radianceModel.spinDirection ?? 1;
   uniforms[38] = Math.tan(options.verticalFovRadians * 0.5);
   uniforms[39] = options.width / options.height;
+  uniforms[40] = options.radianceModel.emissionPhase ?? 0;
   return uniforms;
 }
 
@@ -166,7 +167,7 @@ export function packCompositeRaySample(
   samples[base + 23] = sample.radianceModel.emissivityScale;
   samples[base + 24] = sample.radianceModel.boostPower;
   samples[base + 25] = sample.radianceModel.spinDirection ?? 1;
-  samples[base + 26] = 0;
+  samples[base + 26] = sample.radianceModel.emissionPhase ?? 0;
   samples[base + 27] = 0;
 }
 

@@ -86,6 +86,7 @@ const diskOuterInput = controlRange('disk outer', 6, 30, 0.5, 18);
 const diskTempInput = controlRange('disk temp', 3000, 18000, 100, 7200);
 const diskEmissionInput = controlRange('disk emission', 0.1, 4, 0.05, 1);
 const diskBoostInput = controlRange('disk boost', 0, 6, 0.1, 4);
+const diskPhaseInput = controlRange('disk phase', 0, 6.28, 0.02, 0);
 const diskDirectionSelect = document.createElement('select');
 diskDirectionSelect.style.cssText =
   'background:#171a22;color:#e6eaf4;border:1px solid #3b4150;border-radius:5px;padding:5px;font:13px ui-monospace,monospace;';
@@ -298,6 +299,7 @@ previewButton.addEventListener('click', () => {
   diskTempInput.input,
   diskEmissionInput.input,
   diskBoostInput.input,
+  diskPhaseInput.input,
 ].forEach((input) => {
   input.addEventListener('input', () => scheduleGpuPreviewRender());
 });
@@ -566,6 +568,7 @@ async function renderGpuPreview() {
       `yaw ${yawInput.input.value}, pitch ${pitchInput.input.value}, ` +
       `disk ${options.disk.innerRadius.toFixed(1)}-${options.disk.outerRadius.toFixed(1)}, ` +
       `temp ${options.radianceModel.innerTemperature.toFixed(0)}, ` +
+      `phase ${(options.radianceModel.emissionPhase ?? 0).toFixed(2)}, ` +
       `quality ${qualitySelect.value} (${options.traceOptions.stepSize.toFixed(3)} x ${options.traceOptions.maxSteps}), ` +
       `disk hits ${diskHits}, horizons ${horizons}, max drift ${maxDrift.toExponential(3)}`;
     previewReadout.textContent = previewLine;
@@ -1066,6 +1069,7 @@ function selectedDiskModel(): { disk: ThinDisk; radianceModel: DiskRadianceModel
       emissivityScale: Number(diskEmissionInput.input.value),
       boostPower: Number(diskBoostInput.input.value),
       spinDirection,
+      emissionPhase: Number(diskPhaseInput.input.value),
     },
   };
 }

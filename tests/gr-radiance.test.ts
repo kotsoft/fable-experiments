@@ -69,6 +69,18 @@ describe('disk radiance reference model', () => {
     expect(sampleDiskRadiance(tooFar, params, model)).toBeNull();
   });
 
+  it('modulates disk emission as the texture phase advances', () => {
+    const params = kerrSchildParams(0.5, 1);
+    const state = rayStateAt({ x: 8, y: 2, z: 0 }, { x: 0, y: -1, z: 0 }, params);
+    const phaseZero = sampleDiskRadiance(state, params, { ...model, boostPower: 0, emissionPhase: 0 });
+    const phaseShifted = sampleDiskRadiance(state, params, { ...model, boostPower: 0, emissionPhase: Math.PI / 6 });
+
+    expect(phaseZero).not.toBeNull();
+    expect(phaseShifted).not.toBeNull();
+    expect(phaseZero!.temperature).toBeCloseTo(phaseShifted!.temperature, 12);
+    expect(phaseZero!.bolometricIntensity).not.toBeCloseTo(phaseShifted!.bolometricIntensity, 6);
+  });
+
   it('keeps blackbody RGB in displayable normalized bounds before intensity scaling', () => {
     for (const temperature of [1800, 4500, 7200, 18000]) {
       const rgb = blackbodyRgb(temperature);

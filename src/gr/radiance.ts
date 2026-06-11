@@ -15,6 +15,7 @@ export interface DiskRadianceModel {
   emissivityScale: number;
   boostPower: number;
   spinDirection?: 1 | -1;
+  emissionPhase?: number;
 }
 
 export interface DiskRadianceSample {
@@ -42,7 +43,8 @@ export function sampleDiskRadiance(
   const temperature = model.innerTemperature * Math.pow(radius / model.innerRadius, -0.75);
   const emittedRgb = blackbodyRgb(temperature);
   const radialFalloff = Math.pow(radius / model.innerRadius, -2.4);
-  const bolometricIntensity = model.emissivityScale * radialFalloff * Math.pow(Math.max(redshift, 0), model.boostPower);
+  const texture = diskEmissivityTexture(position, radius, model.spinDirection ?? 1, model.emissionPhase ?? 0);
+  const bolometricIntensity = model.emissivityScale * texture * radialFalloff * Math.pow(Math.max(redshift, 0), model.boostPower);
   const observedRgb = scaleRgb(emittedRgb, bolometricIntensity);
 
   return {
@@ -54,6 +56,18 @@ export function sampleDiskRadiance(
     observedRgb,
     bolometricIntensity,
   };
+}
+
+export function diskEmissivityTexture(
+  position: Vec3,
+  radius: number,
+  spinDirection: 1 | -1 = 1,
+  phase = 0,
+): number {
+  const azimuth = Math.atan2(position.y, position.x);
+  const advectedAzimuth = azimuth - spinDirection * phase;
+  const spiral = Math.cos(6 * advectedAzimuth + 1.35 * Math.log(Math.max(radius, 1e-4)));
+  return 0.65 + 0.35 * (0.5 + 0.5 * spiral);
 }
 
 export function redshiftFactor(photonCovector: Vec4, emitterVelocity: Vec4, observerVelocity?: Vec4): number {

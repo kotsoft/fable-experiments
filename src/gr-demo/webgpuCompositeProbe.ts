@@ -262,13 +262,18 @@ fn observed_disk_rgb(position: vec3<f32>, momentum: vec4<f32>, observer_velocity
   let emissivity_scale = input.paramsC.w;
   let boost_power = input.paramsD.x;
   let spin_direction = input.paramsD.y;
+  let emission_phase = input.paramsD.z;
   let radius = ks_radius(position, spin);
   let emitter_velocity = disk_emitter_four_velocity(position, spin, mass, spin_direction);
   let redshift = redshift_factor(momentum, emitter_velocity, observer_velocity);
   let temperature = inner_temperature * pow(radius / inner_radius, -0.75);
   let emitted_rgb = blackbody_rgb(temperature);
   let radial_falloff = pow(radius / inner_radius, -2.4);
-  let bolometric = emissivity_scale * radial_falloff * pow(max(redshift, 0.0), boost_power);
+  let azimuth = atan2(position.y, position.x);
+  let advected_azimuth = azimuth - spin_direction * emission_phase;
+  let spiral = cos(6.0 * advected_azimuth + 1.35 * log(max(radius, 1.0e-4)));
+  let texture = 0.65 + 0.35 * (0.5 + 0.5 * spiral);
+  let bolometric = emissivity_scale * texture * radial_falloff * pow(max(redshift, 0.0), boost_power);
   return emitted_rgb * bolometric;
 }
 

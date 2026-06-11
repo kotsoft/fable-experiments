@@ -43,6 +43,7 @@ describe('composite ray sample packing', () => {
         innerTemperature: 7200,
         emissivityScale: 1,
         boostPower: 4,
+        emissionPhase: 1.25,
       },
     });
 
@@ -56,6 +57,7 @@ describe('composite ray sample packing', () => {
     expect([...uniforms.slice(32, 38)]).toEqual([3, 18, 7200, 1, 4, 1]);
     expect(uniforms[38]).toBeCloseTo(Math.tan(0.82 * 0.5));
     expect(uniforms[39]).toBeCloseTo(64 / 36);
+    expect(uniforms[40]).toBeCloseTo(1.25);
   });
 
   it('packs camera-generated tetrad rays as null covectors', () => {
@@ -84,10 +86,12 @@ describe('composite ray sample packing', () => {
         innerTemperature: 7200,
         emissivityScale: 1,
         boostPower: 4,
+        emissionPhase: 0.75,
       },
     });
 
     expect(samples.length).toBe(4 * 3 * COMPOSITE_INPUT_FLOATS_PER_RAY);
+    expect(samples[26]).toBeCloseTo(0.75);
     for (let i = 0; i < 12; i++) {
       expect(Math.abs(compositeSampleHamiltonian(samples, i, params))).toBeLessThan(5e-8);
     }

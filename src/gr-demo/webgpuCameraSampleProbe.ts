@@ -129,7 +129,7 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
   }
   let momentum = launch_momentum(local_direction(i));
   let traceParamsB = vec4<f32>(camera.paramsB.x, camera.paramsB.y, 0.0, 0.0);
-  let traceParamsD = vec4<f32>(camera.paramsD.x, camera.paramsD.y, 0.0, 0.0);
+  let traceParamsD = vec4<f32>(camera.paramsD.x, camera.paramsD.y, camera.reservedA.x, 0.0);
   samples[i] = RaySample(
     camera.position,
     momentum,
