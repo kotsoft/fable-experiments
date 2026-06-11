@@ -28,6 +28,13 @@ export interface DiskRadianceSample {
   bolometricIntensity: number;
 }
 
+export interface DiskVolumeEmission {
+  radius: number;
+  density: number;
+  rgb: [number, number, number];
+  radiance: DiskRadianceSample;
+}
+
 export function sampleDiskRadiance(
   rayState: GeodesicState,
   params: KerrSchildParams,
@@ -55,6 +62,34 @@ export function sampleDiskRadiance(
     emittedRgb,
     observedRgb,
     bolometricIntensity,
+  };
+}
+
+export function sampleDiskVolumeEmission(
+  rayState: GeodesicState,
+  params: KerrSchildParams,
+  model: DiskRadianceModel,
+  observerVelocity: Vec4 | undefined,
+  stepSize: number,
+): DiskVolumeEmission | null {
+  const position = spatialPosition(rayState.position);
+  const radius = kerrSchildRadius(position, params);
+  if (radius < model.innerRadius || radius > model.outerRadius) return null;
+
+  const radiance = sampleDiskRadiance(rayState, params, model, observerVelocity);
+  if (!radiance) return null;
+
+  const scaleHeight = diskScaleHeight(radius);
+  const vertical = position.z / scaleHeight;
+  const density = Math.exp(-0.5 * vertical * vertical);
+  if (density < 1e-5) return null;
+
+  const pathWeight = density * Math.max(stepSize, 0) / (Math.sqrt(2 * Math.PI) * scaleHeight);
+  return {
+    radius,
+    density,
+    rgb: scaleRgb(radiance.observedRgb, pathWeight),
+    radiance,
   };
 }
 
@@ -103,6 +138,10 @@ export function emissivityWeightedDiskAngularVelocity(
   }
 
   return totalWeight > 0 ? weightedOmega / totalWeight : 0;
+}
+
+export function diskScaleHeight(radius: number): number {
+  return Math.max(0.08, 0.04 * Math.max(radius, 0));
 }
 
 export function redshiftFactor(photonCovector: Vec4, emitterVelocity: Vec4, observerVelocity?: Vec4): number {

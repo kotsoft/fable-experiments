@@ -1,4 +1,4 @@
-import { refineDiskCrossing, type ThinDisk } from './disk';
+import { type ThinDisk } from './disk';
 import {
   coordinateVelocity,
   hamiltonian,
@@ -8,7 +8,11 @@ import {
   type TraceOptions,
 } from './geodesic';
 import { horizonRadius, kerrSchildRadius, type KerrSchildParams, type Vec3, type Vec4 } from './kerrSchild';
-import { sampleDiskRadiance, type DiskRadianceModel, type DiskRadianceSample } from './radiance';
+import {
+  sampleDiskVolumeEmission,
+  type DiskRadianceModel,
+  type DiskRadianceSample,
+} from './radiance';
 import { launchPhotonFromTetrad, type GrTetrad } from './tetrad';
 
 export interface ProbeCamera {
@@ -38,6 +42,8 @@ export interface ProbeGrid {
   height: number;
   rays: ProbeRay[];
 }
+
+const VOLUME_SAMPLE_STRIDE = 2;
 
 export function renderProbeGrid(
   params: KerrSchildParams,
@@ -107,41 +113,127 @@ function traceProbeRayWithDisk(
   const h0 = hamiltonian(initial, params);
   let maxHamiltonianDrift = 0;
   const horizon = horizonRadius(params);
+  const accumulatedColor: [number, number, number] = [0, 0, 0];
+  let accumulatedWeight = 0;
+  let brightestDiskRadius = -1;
+  let brightestDiskRadiance: DiskRadianceSample | null = null;
+  const volumeModel = radianceModel
+    ? { ...radianceModel, innerRadius: disk.innerRadius, outerRadius: disk.outerRadius }
+    : undefined;
 
   for (let steps = 0; steps < options.maxSteps; steps++) {
     const radius = kerrSchildRadius(position3(state.position), params);
     if (radius <= options.singularityRadius) {
-      return { state, steps, status: 'singularity', maxHamiltonianDrift };
+      return finishAccumulatedTrace(
+        state,
+        steps,
+        'singularity',
+        maxHamiltonianDrift,
+        accumulatedColor,
+        accumulatedWeight,
+        brightestDiskRadius,
+        brightestDiskRadiance,
+        params,
+      );
     }
     if (horizon > 0 && radius <= horizon) {
-      return { state, steps, status: 'horizon', maxHamiltonianDrift };
+      return finishAccumulatedTrace(
+        state,
+        steps,
+        'horizon',
+        maxHamiltonianDrift,
+        accumulatedColor,
+        accumulatedWeight,
+        brightestDiskRadius,
+        brightestDiskRadiance,
+        params,
+      );
     }
     if (radius >= options.escapeRadius && radialCoordinateSpeed(state, params) > 0) {
-      return { state, steps, status: 'escaped', maxHamiltonianDrift };
+      return finishAccumulatedTrace(
+        state,
+        steps,
+        'escaped',
+        maxHamiltonianDrift,
+        accumulatedColor,
+        accumulatedWeight,
+        brightestDiskRadius,
+        brightestDiskRadiance,
+        params,
+      );
     }
 
-    const crossing = refineDiskCrossing(state, params, options.stepSize, disk);
-    if (crossing && crossing.affineParameter > 1e-7) {
-      return {
-        state: crossing.state,
-        steps,
-        status: 'disk',
-        maxHamiltonianDrift,
-        diskHit: {
-          radius: crossing.radius,
-          affineParameter: crossing.affineParameter,
-          radiance: radianceModel
-            ? sampleDiskRadiance(crossing.state, params, radianceModel, observerVelocity)
-            : null,
-        },
-      };
+    if (volumeModel && steps % VOLUME_SAMPLE_STRIDE === 0) {
+      const emission = sampleDiskVolumeEmission(
+        state,
+        params,
+        volumeModel,
+        observerVelocity,
+        options.stepSize * VOLUME_SAMPLE_STRIDE,
+      );
+      if (emission) {
+        accumulatedColor[0] += emission.rgb[0];
+        accumulatedColor[1] += emission.rgb[1];
+        accumulatedColor[2] += emission.rgb[2];
+        const weight = emission.rgb[0] + emission.rgb[1] + emission.rgb[2];
+        if (weight > accumulatedWeight) {
+          accumulatedWeight = weight;
+          brightestDiskRadius = emission.radius;
+          brightestDiskRadiance = emission.radiance;
+        }
+      }
     }
 
     state = stepNullGeodesic(state, params, options.stepSize);
     maxHamiltonianDrift = Math.max(maxHamiltonianDrift, Math.abs(hamiltonian(state, params) - h0));
   }
 
-  return { state, steps: options.maxSteps, status: 'max-steps', maxHamiltonianDrift };
+  return finishAccumulatedTrace(
+    state,
+    options.maxSteps,
+    'max-steps',
+    maxHamiltonianDrift,
+    accumulatedColor,
+    accumulatedWeight,
+    brightestDiskRadius,
+    brightestDiskRadiance,
+    params,
+  );
+}
+
+function finishAccumulatedTrace(
+  state: GeodesicState,
+  steps: number,
+  terminalStatus: ProbeRay['status'],
+  maxHamiltonianDrift: number,
+  accumulatedColor: [number, number, number],
+  accumulatedWeight: number,
+  diskRadius: number,
+  diskRadiance: DiskRadianceSample | null,
+  params: KerrSchildParams,
+): ProbeTraceResult {
+  if (accumulatedWeight <= 1e-8) {
+    return { state, steps, status: terminalStatus, maxHamiltonianDrift };
+  }
+
+  const background = diagnosticColor(
+    terminalStatus,
+    coordinateVelocity(state.position, state.momentum, params),
+  );
+
+  return {
+    state,
+    steps,
+    status: 'disk',
+    maxHamiltonianDrift,
+    diskHit: {
+      radius: diskRadius,
+      affineParameter: steps,
+      radiance: diskRadiance
+        ? { ...diskRadiance, observedRgb: addRgb(accumulatedColor, background) }
+        : null,
+    },
+  };
 }
 
 function diagnosticColor(status: ProbeRay['status'], velocity: Vec4): [number, number, number] {
@@ -205,4 +297,8 @@ function normalize3(v: Vec3): Vec3 {
 
 function dot3(a: Vec3, b: Vec3): number {
   return a.x * b.x + a.y * b.y + a.z * b.z;
+}
+
+function addRgb(a: [number, number, number], b: [number, number, number]): [number, number, number] {
+  return [a[0] + b[0], a[1] + b[1], a[2] + b[2]];
 }

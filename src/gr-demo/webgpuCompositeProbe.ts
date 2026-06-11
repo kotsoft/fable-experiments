@@ -68,6 +68,12 @@ struct CompositeOutput {
   color: vec4<f32>,
 };
 
+struct VolumeEmission {
+  color: vec3<f32>,
+  weight: f32,
+  radius: f32,
+};
+
 @group(0) @binding(0) var<storage, read> samples: array<RaySample>;
 @group(0) @binding(1) var<storage, read_write> outputData: array<CompositeOutput>;
 
@@ -281,55 +287,35 @@ fn observed_disk_rgb(position: vec3<f32>, momentum: vec4<f32>, observer_velocity
   return emitted_rgb * bolometric;
 }
 
-fn disk_crossing(start_position: vec4<f32>, start_momentum: vec4<f32>, input: RaySample) -> CompositeOutput {
+fn disk_scale_height(radius: f32) -> f32 {
+  return max(0.08, 0.04 * max(radius, 0.0));
+}
+
+fn disk_volume_emission(
+  position: vec3<f32>,
+  momentum: vec4<f32>,
+  observer_velocity: vec4<f32>,
+  input: RaySample,
+  path_step_size: f32
+) -> VolumeEmission {
   let spin = input.paramsA.x;
-  let step_size = input.paramsA.y;
-  let mass = input.paramsB.y;
   let inner_radius = input.paramsC.x;
   let outer_radius = input.paramsC.y;
-  let h0 = start_position.w;
-  let end = rk4(start_position, start_momentum, spin, mass, step_size);
-  let h1 = end.position.w;
-
-  if (abs(h0) < 1.0e-12) {
-    let radius = ks_radius(start_position.yzw, spin);
-    if (radius >= inner_radius && radius <= outer_radius) {
-      let rgb = observed_disk_rgb(start_position.yzw, start_momentum, input.observerVelocity, input);
-      return CompositeOutput(vec4<f32>(4.0, 0.0, radius, radius), vec4<f32>(rgb, 0.0));
-    }
-  }
-  if (h0 * h1 > 0.0) {
-    return CompositeOutput(vec4<f32>(-1.0, 0.0, 0.0, -1.0), vec4<f32>(0.0));
+  let radius = ks_radius(position, spin);
+  if (radius < inner_radius || radius > outer_radius) {
+    return VolumeEmission(vec3<f32>(0.0), 0.0, -1.0);
   }
 
-  var lo = 0.0;
-  var hi = step_size;
-  var lo_height = h0;
-  var best = end;
-  for (var i = 0u; i < 18u; i = i + 1u) {
-    let mid = 0.5 * (lo + hi);
-    let state = rk4(start_position, start_momentum, spin, mass, mid);
-    let height = state.position.w;
-    best = state;
-    if (abs(height) < 1.0e-12) {
-      lo = mid;
-      hi = mid;
-      break;
-    }
-    if (lo_height * height <= 0.0) {
-      hi = mid;
-    } else {
-      lo = mid;
-      lo_height = height;
-    }
+  let scale_height = disk_scale_height(radius);
+  let vertical = position.z / scale_height;
+  let density = exp(-0.5 * vertical * vertical);
+  if (density < 1.0e-5) {
+    return VolumeEmission(vec3<f32>(0.0), 0.0, -1.0);
   }
 
-  let disk_radius = ks_radius(best.position.yzw, spin);
-  if (disk_radius < inner_radius || disk_radius > outer_radius) {
-    return CompositeOutput(vec4<f32>(-1.0, 0.0, 0.0, -1.0), vec4<f32>(0.0));
-  }
-  let rgb = observed_disk_rgb(best.position.yzw, best.momentum, input.observerVelocity, input);
-  return CompositeOutput(vec4<f32>(4.0, 0.5 * (lo + hi), disk_radius, disk_radius), vec4<f32>(rgb, 0.0));
+  let path_weight = density * max(path_step_size, 0.0) / (2.50662827463 * scale_height);
+  let color = observed_disk_rgb(position, momentum, observer_velocity, input) * path_weight;
+  return VolumeEmission(color, color.r + color.g + color.b, radius);
 }
 
 fn diagnostic_color(status: f32, position: vec3<f32>, momentum: vec4<f32>, spin: f32, mass: f32) -> vec3<f32> {
@@ -359,25 +345,43 @@ fn trace_composite(input: RaySample) -> CompositeOutput {
   var position = input.position;
   var momentum = input.momentum;
   var max_drift = 0.0;
+  var accumulated_disk = vec3<f32>(0.0);
+  var brightest_disk_weight = 0.0;
+  var brightest_disk_radius = -1.0;
 
   for (var steps = 0u; steps < max_steps; steps = steps + 1u) {
     let radius = ks_radius(position.yzw, spin);
     if (radius <= singularity_radius) {
       let rgb = diagnostic_color(2.0, position.yzw, momentum, spin, mass);
+      if (brightest_disk_weight > 1.0e-8) {
+        return CompositeOutput(vec4<f32>(4.0, f32(steps), radius, brightest_disk_radius), vec4<f32>(accumulated_disk + rgb, max_drift));
+      }
       return CompositeOutput(vec4<f32>(2.0, f32(steps), radius, -1.0), vec4<f32>(rgb, max_drift));
     }
     if (horizon > 0.0 && radius <= horizon) {
       let rgb = diagnostic_color(1.0, position.yzw, momentum, spin, mass);
+      if (brightest_disk_weight > 1.0e-8) {
+        return CompositeOutput(vec4<f32>(4.0, f32(steps), radius, brightest_disk_radius), vec4<f32>(accumulated_disk + rgb, max_drift));
+      }
       return CompositeOutput(vec4<f32>(1.0, f32(steps), radius, -1.0), vec4<f32>(rgb, max_drift));
     }
     if (radius >= escape_radius && radial_coordinate_speed(position.yzw, momentum, spin, mass) > 0.0) {
       let rgb = diagnostic_color(0.0, position.yzw, momentum, spin, mass);
+      if (brightest_disk_weight > 1.0e-8) {
+        return CompositeOutput(vec4<f32>(4.0, f32(steps), radius, brightest_disk_radius), vec4<f32>(accumulated_disk + rgb, max_drift));
+      }
       return CompositeOutput(vec4<f32>(0.0, f32(steps), radius, -1.0), vec4<f32>(rgb, max_drift));
     }
 
-    let crossing = disk_crossing(position, momentum, input);
-    if (crossing.summary.x == 4.0 && crossing.summary.y > 1.0e-7) {
-      return CompositeOutput(vec4<f32>(4.0, f32(steps), crossing.summary.z, crossing.summary.w), vec4<f32>(crossing.color.xyz, max_drift));
+    if (steps % 2u == 0u) {
+      let emission = disk_volume_emission(position.yzw, momentum, input.observerVelocity, input, step_size * 2.0);
+      if (emission.weight > 0.0) {
+        accumulated_disk = accumulated_disk + emission.color;
+        if (emission.weight > brightest_disk_weight) {
+          brightest_disk_weight = emission.weight;
+          brightest_disk_radius = emission.radius;
+        }
+      }
     }
 
     let next = rk4(position, momentum, spin, mass, step_size);
@@ -388,6 +392,9 @@ fn trace_composite(input: RaySample) -> CompositeOutput {
 
   let radius = ks_radius(position.yzw, spin);
   let rgb = diagnostic_color(3.0, position.yzw, momentum, spin, mass);
+  if (brightest_disk_weight > 1.0e-8) {
+    return CompositeOutput(vec4<f32>(4.0, f32(max_steps), radius, brightest_disk_radius), vec4<f32>(accumulated_disk + rgb, max_drift));
+  }
   return CompositeOutput(vec4<f32>(3.0, f32(max_steps), radius, -1.0), vec4<f32>(rgb, max_drift));
 }
 
