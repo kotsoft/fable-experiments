@@ -182,7 +182,7 @@ previewCanvas.width = 128;
 previewCanvas.height = 72;
 previewCanvas.style.cssText =
   'display:block;width:100%;max-width:1180px;aspect-ratio:16/9;background:#000;margin:0 0 14px;' +
-  'image-rendering:pixelated;border:1px solid #252936;border-radius:6px;';
+  'image-rendering:pixelated;border:1px solid #252936;border-radius:6px;cursor:grab;touch-action:none;user-select:none;';
 output.appendChild(previewCanvas);
 
 const table = document.createElement('pre');
@@ -238,6 +238,7 @@ previewButton.addEventListener('click', () => {
   input.addEventListener('input', () => scheduleGpuPreviewRender());
 });
 resolutionSelect.addEventListener('change', () => scheduleGpuPreviewRender(0));
+installPreviewDragControls();
 scheduleGpuPreviewRender(80);
 
 async function detectWebGpu() {
@@ -520,6 +521,61 @@ function scheduleGpuPreviewRender(delay = 220): void {
     previewRenderTimer = undefined;
     void renderGpuPreview();
   }, delay);
+}
+
+function installPreviewDragControls(): void {
+  const sensitivity = 0.22;
+  let pointerId: number | undefined;
+  let startX = 0;
+  let startY = 0;
+  let startYaw = 0;
+  let startPitch = 0;
+
+  previewCanvas.addEventListener('pointerdown', (event) => {
+    pointerId = event.pointerId;
+    startX = event.clientX;
+    startY = event.clientY;
+    startYaw = Number(yawInput.input.value);
+    startPitch = Number(pitchInput.input.value);
+    previewCanvas.setPointerCapture(event.pointerId);
+    previewCanvas.style.cursor = 'grabbing';
+  });
+
+  previewCanvas.addEventListener('pointermove', (event) => {
+    if (pointerId !== event.pointerId) return;
+    setRangeValue(yawInput.input, startYaw + (event.clientX - startX) * sensitivity);
+    setRangeValue(pitchInput.input, startPitch - (event.clientY - startY) * sensitivity);
+    scheduleGpuPreviewRender();
+  });
+
+  previewCanvas.addEventListener('pointerup', (event) => {
+    if (pointerId !== event.pointerId) return;
+    finishPreviewDrag(event.pointerId);
+  });
+
+  previewCanvas.addEventListener('pointercancel', (event) => {
+    if (pointerId !== event.pointerId) return;
+    finishPreviewDrag(event.pointerId);
+  });
+
+  function finishPreviewDrag(donePointerId: number): void {
+    if (previewCanvas.hasPointerCapture(donePointerId)) {
+      previewCanvas.releasePointerCapture(donePointerId);
+    }
+    pointerId = undefined;
+    previewCanvas.style.cursor = 'grab';
+    scheduleGpuPreviewRender(0);
+  }
+}
+
+function setRangeValue(input: HTMLInputElement, value: number): void {
+  const min = Number(input.min);
+  const max = Number(input.max);
+  const step = Number(input.step) || 1;
+  const clamped = Math.min(max, Math.max(min, value));
+  const snapped = Math.round(clamped / step) * step;
+  input.value = String(Number(snapped.toFixed(4)));
+  input.dispatchEvent(new Event('input', { bubbles: true }));
 }
 
 function createReferenceGrid(): ProbeGrid {
