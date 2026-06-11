@@ -223,6 +223,13 @@ previewButton.style.cssText =
   'cursor:pointer;font:600 13px system-ui,sans-serif;';
 primaryActions.appendChild(previewButton);
 
+const animationButton = document.createElement('button');
+animationButton.textContent = 'pause disk motion';
+animationButton.style.cssText =
+  'background:#2f3442;color:#e6eaf4;border:1px solid #4a5060;border-radius:6px;padding:8px 10px;' +
+  'cursor:pointer;font:600 13px system-ui,sans-serif;';
+primaryActions.appendChild(animationButton);
+
 const summary = document.createElement('pre');
 summary.style.cssText = 'white-space:pre-wrap;margin:0;color:#d7dbe5;';
 diagnostics.appendChild(summary);
@@ -253,6 +260,8 @@ let latestReadback: Float32Array<ArrayBufferLike> = new Float32Array();
 let previewRenderTimer: number | undefined;
 let isPreviewRendering = false;
 let hasPendingPreviewRender = false;
+let diskAnimationTimer: number | undefined;
+let isDiskAnimating = true;
 
 void detectWebGpu();
 renderCpuProbe();
@@ -287,6 +296,9 @@ compositeButton.addEventListener('click', () => {
 previewButton.addEventListener('click', () => {
   void renderGpuPreview();
 });
+animationButton.addEventListener('click', () => {
+  setDiskAnimationEnabled(!isDiskAnimating);
+});
 [
   spinInput.input,
   radiusInput.input,
@@ -307,6 +319,7 @@ diskDirectionSelect.addEventListener('change', () => scheduleGpuPreviewRender())
 resolutionSelect.addEventListener('change', () => scheduleGpuPreviewRender(0));
 qualitySelect.addEventListener('change', () => scheduleGpuPreviewRender(0));
 installPreviewDragControls();
+setDiskAnimationEnabled(true);
 scheduleGpuPreviewRender(80);
 
 async function detectWebGpu() {
@@ -597,6 +610,22 @@ function scheduleGpuPreviewRender(delay = 220): void {
   }, delay);
 }
 
+function setDiskAnimationEnabled(enabled: boolean): void {
+  isDiskAnimating = enabled;
+  animationButton.textContent = enabled ? 'pause disk motion' : 'play disk motion';
+  if (diskAnimationTimer !== undefined) {
+    window.clearInterval(diskAnimationTimer);
+    diskAnimationTimer = undefined;
+  }
+  if (!enabled) return;
+  diskAnimationTimer = window.setInterval(() => {
+    const direction = diskDirectionSelect.value === '-1' ? -1 : 1;
+    const nextPhase = Number(diskPhaseInput.input.value) + direction * 0.12;
+    setWrappedRangeValue(diskPhaseInput.input, nextPhase);
+    scheduleGpuPreviewRender(0);
+  }, 320);
+}
+
 function installPreviewDragControls(): void {
   const sensitivity = 0.22;
   let pointerId: number | undefined;
@@ -650,6 +679,14 @@ function setRangeValue(input: HTMLInputElement, value: number): void {
   const snapped = Math.round(clamped / step) * step;
   input.value = String(Number(snapped.toFixed(4)));
   input.dispatchEvent(new Event('input', { bubbles: true }));
+}
+
+function setWrappedRangeValue(input: HTMLInputElement, value: number): void {
+  const min = Number(input.min);
+  const max = Number(input.max);
+  const span = max - min;
+  const wrapped = ((value - min) % span + span) % span + min;
+  setRangeValue(input, wrapped);
 }
 
 function createReferenceGrid(): ProbeGrid {
