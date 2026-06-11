@@ -405,8 +405,27 @@ interface PipelineCache {
   presentByFormat: Map<GPUTextureFormat, GPURenderPipeline>;
 }
 
+interface CanvasRenderResources {
+  device: GPUDevice;
+  format: GPUTextureFormat;
+  width: number;
+  height: number;
+  rayCount: number;
+  outputByteLength: number;
+  context: GPUCanvasContext;
+  uniformBuffer: GPUBuffer;
+  renderUniformBuffer: GPUBuffer;
+  samples: GPUBuffer;
+  output: GPUBuffer;
+  readback: GPUBuffer;
+  cameraBindGroup: GPUBindGroup;
+  compositeBindGroup: GPUBindGroup;
+  presentBindGroup: GPUBindGroup;
+}
+
 let cachedDevicePromise: Promise<GPUDevice | null> | undefined;
 const pipelineCaches = new WeakMap<GPUDevice, PipelineCache>();
+const canvasRenderCaches = new WeakMap<HTMLCanvasElement, CanvasRenderResources>();
 
 const PRESENT_SHADER = `
 struct CompositeOutput {
@@ -633,17 +652,85 @@ export async function renderWebGpuCompositeFromCameraToCanvas(
   }
 
   const uniforms = createCompositeCameraUniforms(options);
-  const rayCount = options.width * options.height;
-  const sampleByteLength = rayCount * COMPOSITE_INPUT_FLOATS_PER_RAY * FLOAT_BYTES;
-  const outputByteLength = rayCount * COMPOSITE_OUTPUT_FLOATS_PER_RAY * FLOAT_BYTES;
   const device = await requestCachedDevice();
   if (!device) return { supported: false, message: 'No WebGPU adapter available' };
-  const context = canvas.getContext('webgpu') as GPUCanvasContext | null;
-  if (!context) return { supported: false, message: 'Canvas WebGPU context is unavailable' };
 
+  const format = navigator.gpu.getPreferredCanvasFormat();
+  const resources = getCanvasRenderResources(canvas, device, format, options, usage, textureUsage);
+  if (!resources) return { supported: false, message: 'Canvas WebGPU context is unavailable' };
+
+  device.queue.writeBuffer(resources.uniformBuffer, 0, uniforms);
+  device.queue.writeBuffer(resources.renderUniformBuffer, 0, new Float32Array([options.width, options.height, 0, 0]));
+
+  const cameraPipeline = getCameraPipeline(device);
+  const compositePipeline = getCompositePipeline(device);
+  const presentPipeline = getPresentPipeline(device, format);
+
+  const encoder = device.createCommandEncoder();
+  const cameraPass = encoder.beginComputePass();
+  cameraPass.setPipeline(cameraPipeline);
+  cameraPass.setBindGroup(0, resources.cameraBindGroup);
+  cameraPass.dispatchWorkgroups(Math.ceil(resources.rayCount / 64));
+  cameraPass.end();
+
+  const compositePass = encoder.beginComputePass();
+  compositePass.setPipeline(compositePipeline);
+  compositePass.setBindGroup(0, resources.compositeBindGroup);
+  compositePass.dispatchWorkgroups(Math.ceil(resources.rayCount / 64));
+  compositePass.end();
+
+  const renderPass = encoder.beginRenderPass({
+    colorAttachments: [
+      {
+        view: resources.context.getCurrentTexture().createView(),
+        clearValue: { r: 0, g: 0, b: 0, a: 1 },
+        loadOp: 'clear',
+        storeOp: 'store',
+      },
+    ],
+  });
+  renderPass.setPipeline(presentPipeline);
+  renderPass.setBindGroup(0, resources.presentBindGroup);
+  renderPass.draw(3);
+  renderPass.end();
+
+  encoder.copyBufferToBuffer(resources.output, 0, resources.readback, 0, resources.outputByteLength);
+  device.queue.submit([encoder.finish()]);
+
+  await resources.readback.mapAsync(mapMode.READ);
+  const outputCopy = new Float32Array(resources.readback.getMappedRange().slice(0));
+  resources.readback.unmap();
+
+  return {
+    supported: true,
+    message: 'WebGPU camera-generated composite rendered to canvas',
+    output: outputCopy,
+  };
+}
+
+function getCanvasRenderResources(
+  canvas: HTMLCanvasElement,
+  device: GPUDevice,
+  format: GPUTextureFormat,
+  options: CompositeCameraSampleOptions,
+  usage: NonNullable<WebGpuConstants['GPUBufferUsage']>,
+  textureUsage: NonNullable<WebGpuConstants['GPUTextureUsage']>,
+): CanvasRenderResources | null {
+  const cached = canvasRenderCaches.get(canvas);
+  if (
+    cached &&
+    cached.device === device &&
+    cached.format === format &&
+    cached.width === options.width &&
+    cached.height === options.height
+  ) {
+    return cached;
+  }
+
+  const context = canvas.getContext('webgpu') as GPUCanvasContext | null;
+  if (!context) return null;
   if (canvas.width !== options.width) canvas.width = options.width;
   if (canvas.height !== options.height) canvas.height = options.height;
-  const format = navigator.gpu.getPreferredCanvasFormat();
   context.configure({
     device,
     format,
@@ -651,6 +738,9 @@ export async function renderWebGpuCompositeFromCameraToCanvas(
     alphaMode: 'opaque',
   });
 
+  const rayCount = options.width * options.height;
+  const sampleByteLength = rayCount * COMPOSITE_INPUT_FLOATS_PER_RAY * FLOAT_BYTES;
+  const outputByteLength = rayCount * COMPOSITE_OUTPUT_FLOATS_PER_RAY * FLOAT_BYTES;
   const uniformBuffer = device.createBuffer({
     size: COMPOSITE_CAMERA_UNIFORM_FLOATS * FLOAT_BYTES,
     usage: usage.UNIFORM | usage.COPY_DST,
@@ -671,77 +761,46 @@ export async function renderWebGpuCompositeFromCameraToCanvas(
     size: outputByteLength,
     usage: usage.COPY_DST | usage.MAP_READ,
   });
-
-  device.queue.writeBuffer(uniformBuffer, 0, uniforms);
-  device.queue.writeBuffer(renderUniformBuffer, 0, new Float32Array([options.width, options.height, 0, 0]));
-
   const cameraPipeline = getCameraPipeline(device);
-  const cameraBindGroup = device.createBindGroup({
-    layout: cameraPipeline.getBindGroupLayout(0),
-    entries: [
-      { binding: 0, resource: { buffer: uniformBuffer } },
-      { binding: 1, resource: { buffer: samples } },
-    ],
-  });
-
   const compositePipeline = getCompositePipeline(device);
-  const compositeBindGroup = device.createBindGroup({
-    layout: compositePipeline.getBindGroupLayout(0),
-    entries: [
-      { binding: 0, resource: { buffer: samples } },
-      { binding: 1, resource: { buffer: output } },
-    ],
-  });
-
   const presentPipeline = getPresentPipeline(device, format);
-  const presentBindGroup = device.createBindGroup({
-    layout: presentPipeline.getBindGroupLayout(0),
-    entries: [
-      { binding: 0, resource: { buffer: output } },
-      { binding: 1, resource: { buffer: renderUniformBuffer } },
-    ],
-  });
-
-  const encoder = device.createCommandEncoder();
-  const cameraPass = encoder.beginComputePass();
-  cameraPass.setPipeline(cameraPipeline);
-  cameraPass.setBindGroup(0, cameraBindGroup);
-  cameraPass.dispatchWorkgroups(Math.ceil(rayCount / 64));
-  cameraPass.end();
-
-  const compositePass = encoder.beginComputePass();
-  compositePass.setPipeline(compositePipeline);
-  compositePass.setBindGroup(0, compositeBindGroup);
-  compositePass.dispatchWorkgroups(Math.ceil(rayCount / 64));
-  compositePass.end();
-
-  const renderPass = encoder.beginRenderPass({
-    colorAttachments: [
-      {
-        view: context.getCurrentTexture().createView(),
-        clearValue: { r: 0, g: 0, b: 0, a: 1 },
-        loadOp: 'clear',
-        storeOp: 'store',
-      },
-    ],
-  });
-  renderPass.setPipeline(presentPipeline);
-  renderPass.setBindGroup(0, presentBindGroup);
-  renderPass.draw(3);
-  renderPass.end();
-
-  encoder.copyBufferToBuffer(output, 0, readback, 0, outputByteLength);
-  device.queue.submit([encoder.finish()]);
-
-  await readback.mapAsync(mapMode.READ);
-  const outputCopy = new Float32Array(readback.getMappedRange().slice(0));
-  readback.unmap();
-
-  return {
-    supported: true,
-    message: 'WebGPU camera-generated composite rendered to canvas',
-    output: outputCopy,
+  const resources: CanvasRenderResources = {
+    device,
+    format,
+    width: options.width,
+    height: options.height,
+    rayCount,
+    outputByteLength,
+    context,
+    uniformBuffer,
+    renderUniformBuffer,
+    samples,
+    output,
+    readback,
+    cameraBindGroup: device.createBindGroup({
+      layout: cameraPipeline.getBindGroupLayout(0),
+      entries: [
+        { binding: 0, resource: { buffer: uniformBuffer } },
+        { binding: 1, resource: { buffer: samples } },
+      ],
+    }),
+    compositeBindGroup: device.createBindGroup({
+      layout: compositePipeline.getBindGroupLayout(0),
+      entries: [
+        { binding: 0, resource: { buffer: samples } },
+        { binding: 1, resource: { buffer: output } },
+      ],
+    }),
+    presentBindGroup: device.createBindGroup({
+      layout: presentPipeline.getBindGroupLayout(0),
+      entries: [
+        { binding: 0, resource: { buffer: output } },
+        { binding: 1, resource: { buffer: renderUniformBuffer } },
+      ],
+    }),
   };
+  canvasRenderCaches.set(canvas, resources);
+  return resources;
 }
 
 async function requestCachedDevice(): Promise<GPUDevice | null> {
