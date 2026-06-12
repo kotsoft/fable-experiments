@@ -100,7 +100,6 @@ export class FallfableRenderer {
   private presentSampler: GPUSampler;
   private skySampler: GPUSampler;
   private skyMilkyTexture: GPUTexture;
-  private skyStarsTexture: GPUTexture;
   private uniforms = new Float32Array(UNIFORM_FLOATS);
 
   private traceTexture: GPUTexture | null = null;
@@ -159,7 +158,6 @@ export class FallfableRenderer {
       minFilter: 'linear',
     });
     this.skyMilkyTexture = this.createSkyAtlasTexture('fallfable milky way atlas');
-    this.skyStarsTexture = this.createSkyAtlasTexture('fallfable star atlas');
     this.generateSkyAtlas();
     if (device.features.has('timestamp-query')) {
       this.timestampSlots = Array.from({ length: TIMING_SLOT_COUNT }, () => ({
@@ -372,7 +370,6 @@ export class FallfableRenderer {
         { binding: 1, resource: view },
         { binding: 2, resource: this.skySampler },
         { binding: 3, resource: this.skyMilkyTexture.createView() },
-        { binding: 4, resource: this.skyStarsTexture.createView() },
       ],
     });
     this.presentBindGroup = this.device.createBindGroup({
@@ -399,7 +396,6 @@ export class FallfableRenderer {
       layout: this.skyPipeline.getBindGroupLayout(0),
       entries: [
         { binding: 0, resource: this.skyMilkyTexture.createView() },
-        { binding: 1, resource: this.skyStarsTexture.createView() },
       ],
     });
     const encoder = this.device.createCommandEncoder();

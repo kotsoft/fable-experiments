@@ -69,18 +69,35 @@ fn fbm(p: vec3<f32>) -> f32 {
   return total;
 }
 
+fn star_falloff(ang2: f32) -> f32 {
+  let x = clamp(1.0 - ang2 * 110.0, 0.0, 1.0);
+  let s = x * x * (3.0 - 2.0 * x);
+  return s * s;
+}
+
 fn star_layer(dir: vec3<f32>, scale: f32, density: f32, gain: f32, gshift: f32) -> vec3<f32> {
   let cell = floor(dir * scale);
+  let pick = hash31(cell + 71.7);
+  if (pick < 1.0 - density) {
+    return vec3<f32>(0.0);
+  }
+
   let h = hash33(cell);
-  // Jitter stays inside the cell and the gaussian dies well before the cell
+  // Jitter stays inside the cell and the compact falloff dies before the cell
   // boundary, so the single containing-cell lookup never shows seams.
   let starDir = normalize(cell + 0.5 + (h - 0.5) * 0.6);
   let c = dot(dir, starDir);
   let ang2 = 2.0 * max(1.0 - c, 0.0) * scale * scale;
-  let pick = hash31(cell + 71.7);
-  let brightness = step(1.0 - density, pick) * pow(hash31(cell + 17.3), 5.0) * gain;
+  let falloff = star_falloff(ang2);
+  if (falloff <= 0.0) {
+    return vec3<f32>(0.0);
+  }
+
+  let intensity = hash31(cell + 17.3);
+  let intensity2 = intensity * intensity;
+  let brightness = intensity2 * intensity2 * intensity * gain;
   let temp = (2600.0 + 11000.0 * h.z * h.z) * gshift;
-  return blackbody(temp) * brightness * exp(-ang2 * 260.0);
+  return blackbody(temp) * brightness * falloff;
 }
 
 const GALACTIC_POLE = vec3<f32>(0.184, 0.92, 0.353);
@@ -124,7 +141,6 @@ export const SKY_ATLAS_WGSL = /* wgsl */ `
 ${SKY_COMMON_WGSL}
 
 @group(0) @binding(0) var milkyOut: texture_storage_2d<rgba16float, write>;
-@group(0) @binding(1) var starsOut: texture_storage_2d<rgba16float, write>;
 
 @compute @workgroup_size(8, 8)
 fn main(@builtin(global_invocation_id) id: vec3<u32>) {
@@ -136,13 +152,8 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
   let uv = (vec2<f32>(f32(id.x), f32(id.y)) + vec2<f32>(0.5)) / vec2<f32>(f32(dims.x), f32(dims.y));
   let d = sky_uv_to_direction(uv);
   let milky = milky_way(d) * blackbody(5400.0) * 0.9;
-  let stars =
-    star_layer(d, 16.0, 0.22, 1.6, 1.0) +
-    star_layer(d, 33.0, 0.28, 0.85, 1.0) +
-    star_layer(d, 64.0, 0.33, 0.45, 1.0);
 
   textureStore(milkyOut, vec2<i32>(i32(id.x), i32(id.y)), vec4<f32>(milky, 1.0));
-  textureStore(starsOut, vec2<i32>(i32(id.x), i32(id.y)), vec4<f32>(stars, 1.0));
 }
 `;
 
@@ -165,7 +176,6 @@ struct Uniforms {
 @group(0) @binding(1) var outImage: texture_storage_2d<rgba16float, write>;
 @group(0) @binding(2) var skySampler: sampler;
 @group(0) @binding(3) var skyMilky: texture_2d<f32>;
-@group(0) @binding(4) var skyStars: texture_2d<f32>;
 
 // ---------------------------------------------------------------- geometry
 
@@ -282,7 +292,10 @@ fn sky_radiance(dir: vec3<f32>, gshift: f32) -> vec3<f32> {
   let g3 = clamp(gshift * gshift * gshift, 1.0e-4, 28.0);
   let shiftTint = blackbody(5400.0 * gshift) / max(blackbody(5400.0), vec3<f32>(1.0e-3));
   let milky = textureSampleLevel(skyMilky, skySampler, uv, 0.0).rgb * shiftTint;
-  let stars = textureSampleLevel(skyStars, skySampler, uv, 0.0).rgb * shiftTint;
+  let stars =
+    star_layer(d, 16.0, 0.22, 1.6, gshift) +
+    star_layer(d, 33.0, 0.28, 0.85, gshift) +
+    star_layer(d, 64.0, 0.33, 0.45, gshift);
   var col = vec3<f32>(0.012, 0.015, 0.028) * u.sky.z;
   col = col + milky * u.sky.y;
   col = col + stars * u.sky.x;
