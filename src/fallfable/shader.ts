@@ -69,6 +69,18 @@ fn fbm(p: vec3<f32>) -> f32 {
   return total;
 }
 
+fn fbm3(p: vec3<f32>) -> f32 {
+  var total = 0.0;
+  var amp = 0.5;
+  var q = p;
+  for (var i = 0; i < 3; i = i + 1) {
+    total = total + amp * vnoise(q);
+    q = q * 2.13 + vec3<f32>(7.7, 3.1, 1.9);
+    amp = amp * 0.5;
+  }
+  return total;
+}
+
 fn star_falloff(ang2: f32) -> f32 {
   let x = clamp(1.0 - ang2 * 110.0, 0.0, 1.0);
   let s = x * x * (3.0 - 2.0 * x);
@@ -391,7 +403,7 @@ fn disk_turbulence(
     cos(spiralAz) * arcRadius,
     sin(spiralAz) * arcRadius + q.z
   );
-  return fbm(noiseP * (4.4 / inner));
+  return fbm3(noiseP * (4.4 / inner));
 }
 
 fn disk_sample(pos: vec4<f32>, mom: vec4<f32>, dl: f32) -> DiskSample {
