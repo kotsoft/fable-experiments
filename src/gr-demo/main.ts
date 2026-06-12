@@ -23,6 +23,7 @@ import {
 } from '../gr/radiance';
 import { probeGridToReadback, READBACK_FLOATS_PER_RAY, ReadbackStatus } from '../gr/readback';
 import { renderProbeGrid, type ProbeGrid } from '../gr/referenceProbe';
+import { kerrShadowBoundary, shadowBounds } from '../gr/shadow';
 import { buildObserverTetrad, staticObserverFourVelocity } from '../gr/tetrad';
 import {
   createCompositeCameraSamples,
@@ -670,8 +671,18 @@ function formatPreviewLine(
     `disk ${options.disk.innerRadius.toFixed(1)}-${options.disk.outerRadius.toFixed(1)}, ` +
     `temp ${options.radianceModel.innerTemperature.toFixed(0)}, ` +
     `phase ${(options.radianceModel.emissionPhase ?? 0).toFixed(2)}, ` +
+    `${formatShadowBenchmark(options)}, ` +
     `quality ${qualitySelect.value} (${options.traceOptions.stepSize.toFixed(3)} x ${options.traceOptions.maxSteps}), ` +
     `${statsLine}${statsAge}`;
+}
+
+function formatShadowBenchmark(options: CompositeCameraSampleOptions): string {
+  const observerDistance = Math.hypot(options.position.x, options.position.y, options.position.z);
+  const inclination = observerDistance > 0
+    ? Math.acos(Math.max(-1, Math.min(1, options.position.z / observerDistance)))
+    : Math.PI / 2;
+  const bounds = shadowBounds(kerrShadowBoundary(options.params, inclination, 96));
+  return `shadow inf ${bounds.horizontalDiameter.toFixed(2)} x ${bounds.verticalDiameter.toFixed(2)}`;
 }
 
 function setDiskAnimationEnabled(enabled: boolean): void {
