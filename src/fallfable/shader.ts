@@ -76,12 +76,6 @@ fn geometry_at(p: vec3<f32>) -> Geometry {
   return Geometry(r, f, l, gradR, gradF, jlx, jly, jlz);
 }
 
-fn hamiltonian(p: vec3<f32>, mom: vec4<f32>) -> f32 {
-  let g = geometry_at(p);
-  let q = -mom.x + dot(g.l, mom.yzw);
-  return 0.5 * (-mom.x * mom.x + dot(mom.yzw, mom.yzw)) - 0.5 * g.f * q * q;
-}
-
 fn metric_dot(p: vec3<f32>, av: vec4<f32>, bv: vec4<f32>) -> f32 {
   let g = geometry_at(p);
   let la = av.x + dot(g.l, av.yzw);
@@ -120,6 +114,10 @@ struct Phase {
 
 fn rk4(s: Phase, h: f32) -> Phase {
   let d1 = phase_derivative(s.position.yzw, s.momentum);
+  return rk4_from_d1(s, h, d1);
+}
+
+fn rk4_from_d1(s: Phase, h: f32, d1: Derivative) -> Phase {
   let s2 = Phase(s.position + d1.velocity * (h * 0.5), s.momentum + vec4<f32>(0.0, d1.force) * (h * 0.5));
   let d2 = phase_derivative(s2.position.yzw, s2.momentum);
   let s3 = Phase(s.position + d2.velocity * (h * 0.5), s.momentum + vec4<f32>(0.0, d2.force) * (h * 0.5));
@@ -131,25 +129,6 @@ fn rk4(s: Phase, h: f32) -> Phase {
     s.position + w * (d1.velocity + 2.0 * d2.velocity + 2.0 * d3.velocity + d4.velocity),
     s.momentum + w * vec4<f32>(0.0, d1.force + 2.0 * d2.force + 2.0 * d3.force + d4.force)
   );
-}
-
-// Project the spatial momentum back onto the null cone (keeps p_t fixed):
-// solve A s^2 + B s + C = 0 for the spatial rescale s closest to 1.
-fn renull(p: vec3<f32>, mom: vec4<f32>) -> vec4<f32> {
-  let g = geometry_at(p);
-  let lp = dot(g.l, mom.yzw);
-  let aa = dot(mom.yzw, mom.yzw) - g.f * lp * lp;
-  let bb = 2.0 * g.f * mom.x * lp;
-  let cc = -mom.x * mom.x * (1.0 + g.f);
-  if (abs(aa) < 1.0e-12) {
-    return mom;
-  }
-  let disc = max(bb * bb - 4.0 * aa * cc, 0.0);
-  let s = (-bb + sqrt(disc)) / (2.0 * aa);
-  if (s > 0.0 && abs(s - 1.0) < 0.5) {
-    return vec4<f32>(mom.x, mom.yzw * s);
-  }
-  return mom;
 }
 
 // ---------------------------------------------------------------- shading
@@ -472,12 +451,13 @@ fn trace(px: vec2<f32>, dims: vec2<f32>) -> vec3<f32> {
       break; // horizon-skimmer: momentum blow-up = shadow
     }
 
+    let d1 = phase_derivative(p, state.momentum);
+
     if (r >= escapeR) {
-      let v = phase_derivative(p, state.momentum).velocity;
-      if (dot(p, v.yzw) > 0.0) {
+      if (dot(p, d1.velocity.yzw) > 0.0) {
         // p_t is conserved; for past-directed q the sky shift is 1 / q_t.
         let gshift = 1.0 / max(state.momentum.x, 1.0e-4);
-        color = color + trans * sky_radiance(v.yzw, gshift);
+        color = color + trans * sky_radiance(d1.velocity.yzw, gshift);
         trans = 0.0;
         debugStatus = 4.0;
         break;
@@ -488,8 +468,7 @@ fn trace(px: vec2<f32>, dims: vec2<f32>) -> vec3<f32> {
     let scaleHeight = u.disk2.z * r;
     if (r > u.march.y * 2.0 && r < u.disk.y * 1.1 && abs(p.z) < 4.0 * scaleHeight) {
       h = min(h, (0.6 * scaleHeight + 0.015) * stepJitter);
-      let v = phase_derivative(p, state.momentum).velocity;
-      let sample = disk_sample(state.position, state.momentum, h * length(v.yzw));
+      let sample = disk_sample(state.position, state.momentum, h * length(d1.velocity.yzw));
       if (sample.opacity > 0.0 || sample.radiance.x + sample.radiance.y + sample.radiance.z > 0.0) {
         color = color + trans * sample.radiance;
         trans = trans * exp(-sample.opacity);
@@ -499,7 +478,7 @@ fn trace(px: vec2<f32>, dims: vec2<f32>) -> vec3<f32> {
       }
     }
 
-    state = rk4(state, h);
+    state = rk4_from_d1(state, h, d1);
   }
 
   if (u.sky.w > 0.5) {
