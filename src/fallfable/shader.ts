@@ -534,7 +534,9 @@ fn trace(px: vec2<f32>, dims: vec2<f32>) -> vec3<f32> {
     }
 
     let mscale = abs(state.momentum.x) + length(state.momentum.yzw);
-    if (mscale > 2.5e3 * m0) {
+    // Near-critical horizon skimmers can spend hundreds of extra steps with
+    // exploding momentum before they visibly become shadow.
+    if (mscale > 3.0e2 * m0) {
       debugStatus = 3.0;
       break; // horizon-skimmer: momentum blow-up = shadow
     }
