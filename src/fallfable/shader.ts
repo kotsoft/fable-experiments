@@ -491,7 +491,11 @@ fn disk_sample(pos: vec4<f32>, mom: vec4<f32>, dl: f32) -> DiskSample {
   let power = tNorm * tNorm * tNorm * tNorm;
   // Steep radial emissivity falloff: the outer disk is a translucent veil, so
   // a camera inside the slab is not swimming in glow.
-  let falloff = pow(x, 2.1) * plungeFade * (1.0 + hotspot_boost(p, r, t_anim) * u.anim.y);
+  var hotspot = 0.0;
+  if (r > 1.2 && r < 5.0 && u.anim.y > 0.0) {
+    hotspot = hotspot_boost(p, r, t_anim);
+  }
+  let falloff = pow(x, 2.1) * plungeFade * (1.0 + hotspot * u.anim.y);
   let boosted = min(pow(gshift, u.disk2.x), 12.0);
   let radiance = blackbody(temp * gshift) * (u.disk.w * density * power * falloff * boosted * dl * 34.0);
   let opacity = u.disk2.w * density * pow(x, 1.4) * plungeFade * dl * 2.1;
