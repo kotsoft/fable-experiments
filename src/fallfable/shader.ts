@@ -20,7 +20,8 @@ struct Uniforms {
   march: vec4<f32>,  // maxSteps, singularityCutoff, tanHalfFov, aspect
   disk: vec4<f32>,   // innerRadius, outerRadius, innerTemperature, emissivity
   disk2: vec4<f32>,  // boostPower, spinDirection, scaleHeight, absorption
-  sky: vec4<f32>,    // starIntensity, milkyWayIntensity, ambient, unused
+  sky: vec4<f32>,    // starIntensity, milkyWayIntensity, ambient, debugStatus
+  anim: vec4<f32>,   // textureTimeScale, hotspotIntensity, unused, unused
 };
 
 @group(0) @binding(0) var<uniform> u: Uniforms;
@@ -247,7 +248,7 @@ fn milky_way(dir: vec3<f32>) -> vec3<f32> {
 // gshift = observed/emitted frequency ratio for light from infinity.
 fn sky_radiance(dir: vec3<f32>, gshift: f32) -> vec3<f32> {
   let d = normalize(dir);
-  let g3 = clamp(gshift * gshift * gshift, 1.0e-4, 60.0);
+  let g3 = clamp(gshift * gshift * gshift, 1.0e-4, 28.0);
   var col = vec3<f32>(0.012, 0.015, 0.028) * u.sky.z;
   col = col + milky_way(d) * u.sky.y * blackbody(5400.0 * gshift) * 0.9;
   col = col + u.sky.x * star_layer(d, 16.0, 0.22, 1.6, gshift);
@@ -282,6 +283,29 @@ struct DiskSample {
   opacity: f32,
 };
 
+// A few bright blobs orbiting at their local Keplerian rate (the disk-flare
+// phenomenology seen around Sgr A*). Their sweep - and the lensed echoes of it
+// - is what makes the disk visibly rotate.
+fn hotspot_boost(p: vec3<f32>, r: f32, t: f32) -> f32 {
+  let az = atan2(p.y, p.x);
+  var boost = 0.0;
+  // (orbit radius, phase offset, gaussian sigma^2, amplitude)
+  var spots = array<vec4<f32>, 3>(
+    vec4<f32>(1.7, 0.0, 0.035, 2.6),
+    vec4<f32>(2.7, 2.2, 0.07, 1.7),
+    vec4<f32>(4.1, 4.4, 0.14, 1.1)
+  );
+  for (var i = 0; i < 3; i = i + 1) {
+    let s = spots[i];
+    let phase = disk_omega(s.x) * t + s.y;
+    let dphi = az - phase;
+    let w = atan2(sin(dphi), cos(dphi));
+    let d2 = (r - s.x) * (r - s.x) + (s.x * w) * (s.x * w);
+    boost = boost + s.w * exp(-d2 / s.z);
+  }
+  return boost;
+}
+
 fn disk_sample(pos: vec4<f32>, mom: vec4<f32>, dl: f32) -> DiskSample {
   let p = pos.yzw;
   let r = ks_radius(p);
@@ -296,7 +320,7 @@ fn disk_sample(pos: vec4<f32>, mom: vec4<f32>, dl: f32) -> DiskSample {
   var plungeFade = 1.0;
   var x = inner / r;
   if (r < inner) {
-    plungeFade = exp((r - inner) * 2.6 / inner);
+    plungeFade = exp((r - inner) * 4.5 / inner);
     x = min(x, 1.15);
   }
   let scaleHeight = u.disk2.z * r;
@@ -310,12 +334,27 @@ fn disk_sample(pos: vec4<f32>, mom: vec4<f32>, dl: f32) -> DiskSample {
   // by Omega(r) * t (the ray carries its own coordinate time, so light-travel
   // delay across the disk is automatic) and look up static fbm there. The
   // r-dependent angle shears the pattern into trailing streaks over time.
-  let ang = -disk_omega(r) * pos.x;
-  let ca = cos(ang);
-  let sa = sin(ang);
-  let q = vec3<f32>(p.x * ca - p.y * sa, p.x * sa + p.y * ca, p.z * 6.0);
-  let turb = fbm(q * (4.4 / inner));
-  let sm = smoothstep(0.3, 0.8, turb);
+  // Texture time runs faster than geometry time (u.anim.x): real Keplerian
+  // periods at these radii are minutes, which reads as a frozen disk. The
+  // redshift/beaming physics below still uses the true orbital velocity.
+  let t_anim = pos.x * u.anim.x;
+  // Bounded dual-phase advection: shearing one static field forever winds it
+  // up without limit (and the wind-up transient reads as counter-rotation).
+  // Instead, two staggered copies are each sheared within a bounded window
+  // and crossfaded, so the gas continuously renews while drifting at the true
+  // local orbital rate.
+  let period = 15.0;
+  let phase = t_anim / period;
+  let t1 = fract(phase) * period;
+  let t2 = fract(phase + 0.5) * period;
+  let w1 = 1.0 - abs(2.0 * fract(phase) - 1.0);
+  let om = disk_omega(r);
+  let a1 = -om * t1;
+  let a2 = -om * t2;
+  let q1 = vec3<f32>(p.x * cos(a1) - p.y * sin(a1), p.x * sin(a1) + p.y * cos(a1), p.z * 6.0);
+  let q2 = vec3<f32>(p.x * cos(a2) - p.y * sin(a2), p.x * sin(a2) + p.y * cos(a2), p.z * 6.0 + 13.7);
+  let turb = mix(fbm(q2 * (4.4 / inner)), fbm(q1 * (4.4 / inner)), w1);
+  let sm = smoothstep(0.32, 0.78, turb);
   let streaks = 0.12 + 1.45 * sm * sm;
 
   // Novikov-Thorne-like profile: T = Tin (rin/r)^(3/4) (1 - sqrt(rin/r))^(1/4),
@@ -339,10 +378,10 @@ fn disk_sample(pos: vec4<f32>, mom: vec4<f32>, dl: f32) -> DiskSample {
   let power = tNorm * tNorm * tNorm * tNorm;
   // Steep radial emissivity falloff: the outer disk is a translucent veil, so
   // a camera inside the slab is not swimming in glow.
-  let falloff = pow(x, 2.1) * plungeFade;
-  let boosted = pow(gshift, u.disk2.x);
-  let radiance = blackbody(temp * gshift) * (u.disk.w * density * power * falloff * boosted * dl * 52.0);
-  let opacity = u.disk2.w * density * pow(x, 1.4) * plungeFade * dl * 1.3;
+  let falloff = pow(x, 2.1) * plungeFade * (1.0 + hotspot_boost(p, r, t_anim) * u.anim.y);
+  let boosted = min(pow(gshift, u.disk2.x), 12.0);
+  let radiance = blackbody(temp * gshift) * (u.disk.w * density * power * falloff * boosted * dl * 34.0);
+  let opacity = u.disk2.w * density * pow(x, 1.4) * plungeFade * dl * 2.1;
   return DiskSample(radiance, opacity);
 }
 

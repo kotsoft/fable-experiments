@@ -240,6 +240,8 @@ void FallfableRenderer.create(canvas, {
     spinDirection: 1,
     scaleHeight: 0.075,
     absorption: 4.0,
+    animationScale: 5,
+    hotspotIntensity: 1,
   },
   sky: {
     starIntensity: 1,
@@ -279,8 +281,8 @@ function frame(nowMs: number): void {
   if (running && !atSingularity) {
     // Inside the horizon proper time runs out in a blink; stretch the playback
     // there so the past-light view is actually watchable.
-    const insidePace = state.r < HORIZON * 1.25
-      ? Math.max(0.15, (state.r - INNER_HORIZON) / (HORIZON * 1.25 - INNER_HORIZON))
+    const insidePace = state.r < HORIZON * 1.5
+      ? Math.max(0.08, (state.r - INNER_HORIZON) / (HORIZON * 1.5 - INNER_HORIZON))
       : 1;
     state = stepPlayer(state, dt * Number(paceInput.value) * insidePace);
     if (nowMs - lastPreviewAt > 300) previewDirty = true;
@@ -319,7 +321,7 @@ function updateReadout(atSingularity: boolean): void {
   lastReadoutAt = now;
   const stats = renderer?.stats;
   const status = atSingularity
-    ? 'worldline ended'
+    ? (state.r <= SINGULARITY_CUTOFF + 1e-9 ? 'singularity reached' : 'worldline lost (integration limit)')
     : state.r <= INNER_HORIZON
       ? 'past the Cauchy horizon — geometry unstable'
       : state.r <= HORIZON
