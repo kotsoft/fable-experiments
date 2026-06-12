@@ -42,7 +42,7 @@ export interface RendererOptions {
     starIntensity: number;
     milkyWayIntensity: number;
     ambient: number;
-    /** 1 = color-code ray termination branches instead of shading. */
+    /** 0 normal, 1 termination branches, 2 trace cost, 3 cost-weighted branches. */
     debugStatus?: number;
   };
 }

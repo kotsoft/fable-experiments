@@ -95,6 +95,23 @@ qualitySelect.style.cssText =
 });
 controls.appendChild(row('resolution', qualitySelect));
 
+const diagnosticSelect = document.createElement('select');
+diagnosticSelect.style.cssText =
+  'background:#171a22;color:#e6eaf4;border:1px solid #3b4150;border-radius:5px;padding:4px 6px;' +
+  'font:12px ui-monospace,monospace;';
+[
+  ['normal', '0'],
+  ['term', '1'],
+  ['cost', '2'],
+  ['cost+term', '3'],
+].forEach(([label, value]) => {
+  const option = document.createElement('option');
+  option.textContent = label;
+  option.value = value;
+  diagnosticSelect.appendChild(option);
+});
+controls.appendChild(row('visualize', diagnosticSelect));
+
 const freezeButton = controlButton('freeze');
 const huntButton = controlButton('hunt');
 const benchmarkButton = controlButton('bench');
@@ -261,6 +278,10 @@ qualitySelect.addEventListener('change', () => {
   renderer?.setQuality(qualitySelect.value === 'auto' ? 'auto' : Number(qualitySelect.value));
 });
 
+diagnosticSelect.addEventListener('change', () => {
+  setDiagnosticMode(currentDiagnosticMode());
+});
+
 freezeButton.addEventListener('click', () => {
   setRunning(!running);
 });
@@ -302,9 +323,11 @@ void FallfableRenderer.create(canvas, {
     starIntensity: 1,
     milkyWayIntensity: 0.5,
     ambient: 0.45,
+    debugStatus: currentDiagnosticMode(),
   },
 }).then((created) => {
   renderer = created;
+  setDiagnosticMode(currentDiagnosticMode());
   rendererMessage = created ? 'past-directed Kerr GRRT · analytic geodesics' : 'WebGPU is unavailable in this browser';
 });
 
@@ -397,6 +420,7 @@ function updateReadout(atSingularity: boolean): void {
         ? `<div>render: ${stats.width}×${stats.height} · gpu ${stats.gpuMs.toFixed(1)} ms · ${fpsEma.toFixed(0)} fps</div>`
         : `<div>render: ${stats.width}×${stats.height} · gpu timer unavailable · ${fpsEma.toFixed(0)} fps</div>`
       : '') +
+    `<div>viz: ${diagnosticLabel()}</div>` +
     (latestBenchmarkResult
       ? `<div>bench: median ${latestBenchmarkResult.medianGpuMs.toFixed(1)} ms · p95 ${latestBenchmarkResult.p95GpuMs.toFixed(1)} ms · ${latestBenchmarkResult.gpuFramesPerSecond.toFixed(1)} gpu fps</div>`
       : '') +
@@ -410,6 +434,7 @@ function updateReadout(atSingularity: boolean): void {
 // ------------------------------------------------------------- benchmarking
 
 type QualityMode = 'auto' | number;
+type DiagnosticMode = 0 | 1 | 2 | 3;
 
 interface FallfableViewSnapshot {
   state: PlayerState;
@@ -417,6 +442,7 @@ interface FallfableViewSnapshot {
   yaw: number;
   pitch: number;
   quality: QualityMode;
+  diagnosticMode: DiagnosticMode;
 }
 
 interface FallfableBenchmarkOptions {
@@ -517,6 +543,28 @@ function setQuality(mode: QualityMode): void {
   }
 }
 
+function currentDiagnosticMode(): DiagnosticMode {
+  return normalizeDiagnosticMode(diagnosticSelect.value);
+}
+
+function normalizeDiagnosticMode(mode: unknown): DiagnosticMode {
+  const value = Number(mode);
+  return (Number.isFinite(value) && value >= 0 && value <= 3 ? Math.floor(value) : 0) as DiagnosticMode;
+}
+
+function setDiagnosticMode(mode: number): void {
+  const normalized = normalizeDiagnosticMode(mode);
+  const value = String(normalized);
+  if (Array.from(diagnosticSelect.options).some((option) => option.value === value)) {
+    diagnosticSelect.value = value;
+  }
+  if (renderer) renderer.options.sky.debugStatus = normalized;
+}
+
+function diagnosticLabel(): string {
+  return diagnosticSelect.options[diagnosticSelect.selectedIndex]?.textContent ?? 'normal';
+}
+
 function clonePlayerState(source: PlayerState): PlayerState {
   return {
     ...source,
@@ -532,6 +580,7 @@ function captureView(): FallfableViewSnapshot {
     yaw,
     pitch,
     quality: currentQuality(),
+    diagnosticMode: currentDiagnosticMode(),
   };
 }
 
@@ -541,6 +590,7 @@ function restoreView(snapshot: FallfableViewSnapshot): void {
   pitch = snapshot.pitch;
   setRunning(snapshot.running);
   setQuality(snapshot.quality);
+  setDiagnosticMode(snapshot.diagnosticMode);
   previewDirty = true;
 }
 
@@ -621,6 +671,7 @@ function benchmarkSnapshot(pointState: PlayerState, pitchBias = 0): FallfableVie
     yaw: view.yaw,
     pitch: Math.max(-1.35, Math.min(1.35, view.pitch + pitchBias)),
     quality: currentQuality(),
+    diagnosticMode: currentDiagnosticMode(),
   };
 }
 
@@ -934,6 +985,8 @@ interface FallfableDebugApi {
   pause(): void;
   preset(id: string): void;
   setQuality(mode: QualityMode): void;
+  setDiagnosticMode(mode: number): void;
+  diagnosticMode(): DiagnosticMode;
   benchmark(options?: FallfableBenchmarkOptions): Promise<FallfableBenchmarkResult>;
   latestBenchmark(): FallfableBenchmarkResult | null;
   benchmarkPoints(): FallfableBenchmarkPointInfo[];
@@ -973,6 +1026,8 @@ const fallfableDebugApi: FallfableDebugApi = {
     applyPreset(id);
   },
   setQuality,
+  setDiagnosticMode,
+  diagnosticMode: currentDiagnosticMode,
   benchmark: runBenchmark,
   latestBenchmark: () => latestBenchmarkResult,
   benchmarkPoints: listBenchmarkPoints,
@@ -1054,6 +1109,12 @@ async function runDevCommand(
         await waitForRenderer();
         result = await api.huntSpike(spikeHuntOptionsFromParams(params));
         break;
+      case 'diagnostic': {
+        const mode = diagnosticModeFromParams(params);
+        api.setDiagnosticMode(mode);
+        result = { mode, snapshot: api.snapshot() };
+        break;
+      }
       case 'freeze':
         api.freeze();
         result = api.snapshot();
@@ -1089,6 +1150,15 @@ function benchmarkOptionsFromParams(params: URLSearchParams): FallfableBenchmark
     restoreQuality: booleanParam(params, 'restoreQuality'),
     restoreRunning: booleanParam(params, 'restoreRunning'),
   };
+}
+
+function diagnosticModeFromParams(params: URLSearchParams): DiagnosticMode {
+  const raw = params.get('mode') ?? params.get('viz') ?? params.get('diagnostic') ?? '0';
+  if (raw === 'normal') return 0;
+  if (raw === 'term' || raw === 'termination') return 1;
+  if (raw === 'cost') return 2;
+  if (raw === 'combined' || raw === 'cost+term') return 3;
+  return normalizeDiagnosticMode(raw);
 }
 
 function benchmarkPointOptionsFromParams(params: URLSearchParams): FallfableBenchmarkPointOptions {

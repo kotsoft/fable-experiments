@@ -168,7 +168,7 @@ struct Uniforms {
   march: vec4<f32>,  // maxSteps, singularityCutoff, tanHalfFov, aspect
   disk: vec4<f32>,   // innerRadius, outerRadius, innerTemperature, emissivity
   disk2: vec4<f32>,  // boostPower, spinDirection, scaleHeight, absorption
-  sky: vec4<f32>,    // starIntensity, milkyWayIntensity, ambient, debugStatus
+  sky: vec4<f32>,    // starIntensity, milkyWayIntensity, ambient, diagnosticMode
   anim: vec4<f32>,   // textureTimeScale, hotspotIntensity, unused, unused
 };
 
@@ -300,6 +300,26 @@ fn sky_radiance(dir: vec3<f32>, gshift: f32) -> vec3<f32> {
   col = col + milky * u.sky.y;
   col = col + stars * u.sky.x;
   return col * g3;
+}
+
+fn termination_color(status: f32) -> vec3<f32> {
+  if (status == 0.0) { return vec3<f32>(0.0, 0.55, 0.12); } // max steps
+  if (status == 1.0) { return vec3<f32>(0.62, 0.54, 0.0); } // singularity
+  if (status == 2.0) { return vec3<f32>(0.62, 0.04, 0.02); } // horizon
+  if (status == 3.0) { return vec3<f32>(0.55, 0.0, 0.58); } // momentum blow-up
+  if (status == 4.0) { return vec3<f32>(0.0, 0.22, 0.72); } // sky escape
+  return vec3<f32>(0.9, 0.42, 0.04); // disk opacity
+}
+
+fn cost_color(t: f32) -> vec3<f32> {
+  let x = clamp(t, 0.0, 1.0);
+  let cold = vec3<f32>(0.02, 0.08, 0.45);
+  let mid = vec3<f32>(0.0, 0.78, 0.62);
+  let warm = vec3<f32>(0.95, 0.85, 0.12);
+  let hot = vec3<f32>(1.0, 0.05, 0.02);
+  let low = mix(cold, mid, smoothstep(0.0, 0.45, x));
+  let high = mix(warm, hot, smoothstep(0.72, 1.0, x));
+  return mix(low, high, smoothstep(0.35, 0.82, x));
 }
 
 // ---------------------------------------------------------------- disk
@@ -493,9 +513,11 @@ fn trace(px: vec2<f32>, dims: vec2<f32>) -> vec3<f32> {
 
   var color = vec3<f32>(0.0);
   var trans = 1.0;
-  var debugStatus = 0.0; // 0 max-steps, 1 cutoff, 2 horizon, 3 blow-up, 4 sky
+  var stepsTaken = 0.0;
+  var debugStatus = 0.0; // 0 max-steps, 1 cutoff, 2 horizon, 3 blow-up, 4 sky, 5 disk opacity
 
   for (var step = 0; step < maxSteps; step = step + 1) {
+    stepsTaken = f32(step + 1);
     let p = state.position.yzw;
     let r = ks_radius(p);
 
@@ -539,6 +561,7 @@ fn trace(px: vec2<f32>, dims: vec2<f32>) -> vec3<f32> {
         color = color + trans * sample.radiance;
         trans = trans * exp(-sample.opacity);
         if (trans < 0.012) {
+          debugStatus = 5.0;
           break; // disk is optically thick here
         }
       }
@@ -548,12 +571,14 @@ fn trace(px: vec2<f32>, dims: vec2<f32>) -> vec3<f32> {
   }
 
   if (u.sky.w > 0.5) {
-    // Debug visualization: which branch ended this ray?
-    if (debugStatus == 0.0) { return vec3<f32>(0.0, 0.5, 0.0); }
-    if (debugStatus == 1.0) { return vec3<f32>(0.5, 0.5, 0.0); }
-    if (debugStatus == 2.0) { return vec3<f32>(0.5, 0.0, 0.0); }
-    if (debugStatus == 3.0) { return vec3<f32>(0.5, 0.0, 0.5); }
-    return vec3<f32>(0.0, 0.2, 0.6);
+    let cost = pow(clamp(stepsTaken / max(u.march.x, 1.0), 0.0, 1.0), 0.55);
+    if (u.sky.w < 1.5) {
+      return termination_color(debugStatus);
+    }
+    if (u.sky.w < 2.5) {
+      return cost_color(cost);
+    }
+    return termination_color(debugStatus) * (0.16 + 1.85 * cost);
   }
   return color;
 }
