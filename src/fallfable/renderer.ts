@@ -42,7 +42,7 @@ export interface RendererOptions {
     starIntensity: number;
     milkyWayIntensity: number;
     ambient: number;
-    /** 0 normal, 1 termination, 2 cost, 3 cost+term, 4 4x4 classifier, 5 8x8 tile classifier. */
+    /** 0 normal, 1 termination, 2 cost, 3 cost+term, 4 classifier, 5 tile classifier, 6 shadow skip, 7 shadow skip tint. */
     debugStatus?: number;
   };
 }
@@ -67,7 +67,7 @@ const UNIFORM_FLOATS = 44;
 const MAX_IN_FLIGHT = 2;
 const MAX_DISPLAY_WIDTH = 1920;
 const TIMING_SLOT_COUNT = 4;
-const TIMESTAMP_QUERY_COUNT = 6;
+const TIMESTAMP_QUERY_COUNT = 8;
 const TIMESTAMP_RESULT_BYTES = TIMESTAMP_QUERY_COUNT * 8;
 const SKY_ATLAS_WIDTH = 1024;
 const SKY_ATLAS_HEIGHT = 512;
@@ -111,6 +111,8 @@ export class FallfableRenderer {
   private tracePipeline: GPUComputePipeline;
   private classifierFeaturePipeline: GPUComputePipeline;
   private classifierVisualPipeline: GPUComputePipeline;
+  private shadowFillPipeline: GPUComputePipeline;
+  private shadowTracePipeline: GPUComputePipeline;
   private skyPipeline: GPUComputePipeline;
   private presentPipeline: GPURenderPipeline;
   private uniformBuffer: GPUBuffer;
@@ -124,6 +126,8 @@ export class FallfableRenderer {
   private traceBindGroup: GPUBindGroup | null = null;
   private classifierFeatureBindGroup: GPUBindGroup | null = null;
   private classifierVisualBindGroup: GPUBindGroup | null = null;
+  private shadowFillBindGroup: GPUBindGroup | null = null;
+  private shadowTraceBindGroup: GPUBindGroup | null = null;
   private presentBindGroup: GPUBindGroup | null = null;
   private traceWidth = 0;
   private traceHeight = 0;
@@ -166,6 +170,14 @@ export class FallfableRenderer {
     this.classifierVisualPipeline = device.createComputePipeline({
       layout: 'auto',
       compute: { module: traceModule, entryPoint: 'visualize_classifier_main' },
+    });
+    this.shadowFillPipeline = device.createComputePipeline({
+      layout: 'auto',
+      compute: { module: traceModule, entryPoint: 'shadow_fill_main' },
+    });
+    this.shadowTracePipeline = device.createComputePipeline({
+      layout: 'auto',
+      compute: { module: traceModule, entryPoint: 'shadow_trace_main' },
     });
     this.skyPipeline = device.createComputePipeline({
       layout: 'auto',
@@ -261,12 +273,26 @@ export class FallfableRenderer {
     this.device.queue.writeBuffer(this.uniformBuffer, 0, this.uniforms);
     const timingSlot = this.takeTimestampSlot();
     const diagnosticMode = Math.floor(this.options.sky.debugStatus ?? 0);
-    const needsClassifier = diagnosticMode === 4 || diagnosticMode === 5;
-    if (needsClassifier && (!this.classifierTexture || !this.classifierFeatureBindGroup || !this.classifierVisualBindGroup)) {
+    const needsClassifierDiagnostic = diagnosticMode === 4 || diagnosticMode === 5;
+    const needsShadowProbe = diagnosticMode === 6 || diagnosticMode === 7;
+    const needsClassifier = needsClassifierDiagnostic || needsShadowProbe;
+    if (needsClassifierDiagnostic && (!this.classifierTexture || !this.classifierFeatureBindGroup || !this.classifierVisualBindGroup)) {
+      return false;
+    }
+    if (needsShadowProbe && (!this.classifierTexture || !this.classifierFeatureBindGroup || !this.shadowFillBindGroup || !this.shadowTraceBindGroup)) {
       return false;
     }
     const timingPlan: TimestampPlan | null = timingSlot
-      ? needsClassifier
+      ? needsShadowProbe
+        ? {
+            queryCount: 8,
+            total: [0, 7],
+            classifier: [0, 1],
+            output: [2, 3],
+            trace: [4, 5],
+            present: [6, 7],
+          }
+        : needsClassifierDiagnostic
         ? {
             queryCount: 6,
             total: [0, 5],
@@ -298,7 +324,7 @@ export class FallfableRenderer {
       classify.dispatchWorkgroups(Math.ceil(this.classifierWidth / 8), Math.ceil(this.classifierHeight / 8));
       classify.end();
 
-      const visualize = encoder.beginComputePass(timingSlot && timingPlan?.output
+      const output = encoder.beginComputePass(timingSlot && timingPlan?.output
         ? {
             timestampWrites: {
               querySet: timingSlot.querySet,
@@ -307,10 +333,26 @@ export class FallfableRenderer {
             },
           }
         : undefined);
-      visualize.setPipeline(this.classifierVisualPipeline);
-      visualize.setBindGroup(0, this.classifierVisualBindGroup);
-      visualize.dispatchWorkgroups(Math.ceil(this.traceWidth / 8), Math.ceil(this.traceHeight / 8));
-      visualize.end();
+      output.setPipeline(needsShadowProbe ? this.shadowFillPipeline : this.classifierVisualPipeline);
+      output.setBindGroup(0, needsShadowProbe ? this.shadowFillBindGroup : this.classifierVisualBindGroup);
+      output.dispatchWorkgroups(Math.ceil(this.traceWidth / 8), Math.ceil(this.traceHeight / 8));
+      output.end();
+
+      if (needsShadowProbe) {
+        const trace = encoder.beginComputePass(timingSlot && timingPlan?.trace
+          ? {
+              timestampWrites: {
+                querySet: timingSlot.querySet,
+                beginningOfPassWriteIndex: timingPlan.trace[0],
+                endOfPassWriteIndex: timingPlan.trace[1],
+              },
+            }
+          : undefined);
+        trace.setPipeline(this.shadowTracePipeline);
+        trace.setBindGroup(0, this.shadowTraceBindGroup);
+        trace.dispatchWorkgroups(Math.ceil(this.traceWidth / 8), Math.ceil(this.traceHeight / 8));
+        trace.end();
+      }
     } else {
       const compute = encoder.beginComputePass(timingSlot && timingPlan?.trace
         ? {
@@ -450,6 +492,8 @@ export class FallfableRenderer {
     this.classifierTexture?.destroy();
     this.classifierFeatureBindGroup = null;
     this.classifierVisualBindGroup = null;
+    this.shadowFillBindGroup = null;
+    this.shadowTraceBindGroup = null;
     this.traceTexture = this.device.createTexture({
       size: { width: w, height: h },
       format: 'rgba16float',
@@ -492,6 +536,24 @@ export class FallfableRenderer {
       entries: [
         { binding: 0, resource: { buffer: this.uniformBuffer } },
         { binding: 1, resource: view },
+        { binding: 4, resource: classifierView },
+      ],
+    });
+    this.shadowFillBindGroup = this.device.createBindGroup({
+      layout: this.shadowFillPipeline.getBindGroupLayout(0),
+      entries: [
+        { binding: 0, resource: { buffer: this.uniformBuffer } },
+        { binding: 1, resource: view },
+        { binding: 4, resource: classifierView },
+      ],
+    });
+    this.shadowTraceBindGroup = this.device.createBindGroup({
+      layout: this.shadowTracePipeline.getBindGroupLayout(0),
+      entries: [
+        { binding: 0, resource: { buffer: this.uniformBuffer } },
+        { binding: 1, resource: view },
+        { binding: 2, resource: this.skySampler },
+        { binding: 3, resource: skyView },
         { binding: 4, resource: classifierView },
       ],
     });

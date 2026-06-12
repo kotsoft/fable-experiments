@@ -680,6 +680,21 @@ fn load_classifier_feature(coord: vec2<u32>, dims: vec2<u32>) -> vec4<f32> {
   return textureLoad(classifierImage, vec2<i32>(i32(clamped.x), i32(clamped.y)), 0);
 }
 
+fn tile_feature(tileCoord: vec2<u32>, classDims: vec2<u32>) -> vec4<f32> {
+  let tileBase = tileCoord * 2u;
+  var feature = load_classifier_feature(tileBase, classDims);
+  feature = worse_feature(feature, load_classifier_feature(tileBase + vec2<u32>(1u, 0u), classDims));
+  feature = worse_feature(feature, load_classifier_feature(tileBase + vec2<u32>(0u, 1u), classDims));
+  feature = worse_feature(feature, load_classifier_feature(tileBase + vec2<u32>(1u, 1u), classDims));
+  return feature;
+}
+
+fn tile_is_confirmed_shadow(tileCoord: vec2<u32>) -> bool {
+  let feature = tile_feature(tileCoord, textureDimensions(classifierImage));
+  let status = classifier_status(feature);
+  return status == 2.0 || status == 3.0;
+}
+
 @compute @workgroup_size(8, 8)
 fn main(@builtin(global_invocation_id) id: vec3<u32>) {
   let dims = textureDimensions(outImage);
@@ -712,13 +727,38 @@ fn visualize_classifier_main(@builtin(global_invocation_id) id: vec3<u32>) {
   let classDims = textureDimensions(classifierImage);
   var feature = load_classifier_feature(id.xy / 4u, classDims);
   if (u.sky.w > 4.5) {
-    let tileBase = (id.xy / 8u) * 2u;
-    feature = load_classifier_feature(tileBase, classDims);
-    feature = worse_feature(feature, load_classifier_feature(tileBase + vec2<u32>(1u, 0u), classDims));
-    feature = worse_feature(feature, load_classifier_feature(tileBase + vec2<u32>(0u, 1u), classDims));
-    feature = worse_feature(feature, load_classifier_feature(tileBase + vec2<u32>(1u, 1u), classDims));
+    feature = tile_feature(id.xy / 8u, classDims);
   }
   let rgb = classifier_color_from_feature(feature);
+  textureStore(outImage, vec2<i32>(i32(id.x), i32(id.y)), vec4<f32>(rgb, 1.0));
+}
+
+@compute @workgroup_size(8, 8)
+fn shadow_fill_main(@builtin(global_invocation_id) id: vec3<u32>, @builtin(workgroup_id) workgroupId: vec3<u32>) {
+  let dims = textureDimensions(outImage);
+  if (id.x >= dims.x || id.y >= dims.y) {
+    return;
+  }
+  if (!tile_is_confirmed_shadow(workgroupId.xy)) {
+    return;
+  }
+  var rgb = vec3<f32>(0.0);
+  if (u.sky.w > 6.5) {
+    rgb = vec3<f32>(0.0, 0.09, 0.12);
+  }
+  textureStore(outImage, vec2<i32>(i32(id.x), i32(id.y)), vec4<f32>(rgb, 1.0));
+}
+
+@compute @workgroup_size(8, 8)
+fn shadow_trace_main(@builtin(global_invocation_id) id: vec3<u32>, @builtin(workgroup_id) workgroupId: vec3<u32>) {
+  let dims = textureDimensions(outImage);
+  if (id.x >= dims.x || id.y >= dims.y) {
+    return;
+  }
+  if (tile_is_confirmed_shadow(workgroupId.xy)) {
+    return;
+  }
+  let rgb = trace_result(vec2<f32>(f32(id.x), f32(id.y)), vec2<f32>(f32(dims.x), f32(dims.y))).color;
   textureStore(outImage, vec2<i32>(i32(id.x), i32(id.y)), vec4<f32>(rgb, 1.0));
 }
 `;
