@@ -9,6 +9,143 @@
 // is both several times faster and far more accurate in f32 than finite
 // differences of H.
 
+const SKY_COMMON_WGSL = /* wgsl */ `
+const PI = 3.141592653589793;
+const TAU = 6.283185307179586;
+
+fn blackbody(temp: f32) -> vec3<f32> {
+  let t = clamp(temp, 800.0, 40000.0) * 0.01;
+  var r = 1.0;
+  var g = 0.39 * log(t) - 0.632;
+  var b = 0.543 * log(max(t - 10.0, 1.0e-3)) - 1.196;
+  if (t > 66.0) {
+    r = 1.293 * pow(t - 60.0, -0.1332);
+    g = 1.13 * pow(t - 60.0, -0.0755);
+    b = 1.0;
+  }
+  return clamp(vec3<f32>(r, g, b), vec3<f32>(0.0), vec3<f32>(1.0));
+}
+
+fn hash31(p: vec3<f32>) -> f32 {
+  var q = fract(p * vec3<f32>(443.897, 441.423, 437.195));
+  q = q + dot(q, q.yzx + 19.19);
+  return fract((q.x + q.y) * q.z);
+}
+
+fn hash33(p: vec3<f32>) -> vec3<f32> {
+  var q = fract(p * vec3<f32>(443.897, 441.423, 437.195));
+  q = q + dot(q, q.yxz + 19.19);
+  return fract((q.xxy + q.yzz) * q.zyx);
+}
+
+fn vnoise(p: vec3<f32>) -> f32 {
+  let i = floor(p);
+  let w = fract(p);
+  let s = w * w * (3.0 - 2.0 * w);
+  let n000 = hash31(i);
+  let n100 = hash31(i + vec3<f32>(1.0, 0.0, 0.0));
+  let n010 = hash31(i + vec3<f32>(0.0, 1.0, 0.0));
+  let n110 = hash31(i + vec3<f32>(1.0, 1.0, 0.0));
+  let n001 = hash31(i + vec3<f32>(0.0, 0.0, 1.0));
+  let n101 = hash31(i + vec3<f32>(1.0, 0.0, 1.0));
+  let n011 = hash31(i + vec3<f32>(0.0, 1.0, 1.0));
+  let n111 = hash31(i + vec3<f32>(1.0, 1.0, 1.0));
+  return mix(
+    mix(mix(n000, n100, s.x), mix(n010, n110, s.x), s.y),
+    mix(mix(n001, n101, s.x), mix(n011, n111, s.x), s.y),
+    s.z
+  );
+}
+
+fn fbm(p: vec3<f32>) -> f32 {
+  var total = 0.0;
+  var amp = 0.5;
+  var q = p;
+  for (var i = 0; i < 4; i = i + 1) {
+    total = total + amp * vnoise(q);
+    q = q * 2.13 + vec3<f32>(7.7, 3.1, 1.9);
+    amp = amp * 0.5;
+  }
+  return total;
+}
+
+fn star_layer(dir: vec3<f32>, scale: f32, density: f32, gain: f32, gshift: f32) -> vec3<f32> {
+  let cell = floor(dir * scale);
+  let h = hash33(cell);
+  // Jitter stays inside the cell and the gaussian dies well before the cell
+  // boundary, so the single containing-cell lookup never shows seams.
+  let starDir = normalize(cell + 0.5 + (h - 0.5) * 0.6);
+  let c = dot(dir, starDir);
+  let ang2 = 2.0 * max(1.0 - c, 0.0) * scale * scale;
+  let pick = hash31(cell + 71.7);
+  let brightness = step(1.0 - density, pick) * pow(hash31(cell + 17.3), 5.0) * gain;
+  let temp = (2600.0 + 11000.0 * h.z * h.z) * gshift;
+  return blackbody(temp) * brightness * exp(-ang2 * 260.0);
+}
+
+const GALACTIC_POLE = vec3<f32>(0.184, 0.92, 0.353);
+const GALACTIC_CORE = vec3<f32>(0.927, 0.0, 0.375);
+
+fn milky_way(dir: vec3<f32>) -> vec3<f32> {
+  let pole = normalize(GALACTIC_POLE);
+  let sinLat = dot(dir, pole);
+  let band = exp(-sinLat * sinLat * 14.0);
+  if (band < 1.0e-3) {
+    return vec3<f32>(0.0);
+  }
+  let clouds = fbm(dir * 4.6 + 3.1);
+  let wisps = fbm(dir * 11.0 - 5.7);
+  let dust = smoothstep(0.5, 0.78, fbm(dir * 6.5 - 11.3)) * exp(-sinLat * sinLat * 70.0);
+  let core = pow(max(dot(dir, normalize(GALACTIC_CORE)), 0.0), 5.0);
+  let warm = vec3<f32>(1.0, 0.78, 0.55);
+  let cool = vec3<f32>(0.5, 0.62, 1.0);
+  let tint = mix(cool, warm, clamp(0.2 + 1.3 * core, 0.0, 1.0));
+  let glow = band * (0.3 + 0.55 * clouds + 0.35 * wisps * band) * (1.0 - 0.82 * dust) * (0.35 + 1.8 * core);
+  return tint * glow;
+}
+
+fn sky_direction_to_uv(dir: vec3<f32>) -> vec2<f32> {
+  let d = normalize(dir);
+  let lon = atan2(d.z, d.x);
+  let uCoord = fract(lon / TAU + 0.5);
+  let vCoord = acos(clamp(d.y, -1.0, 1.0)) / PI;
+  return vec2<f32>(uCoord, vCoord);
+}
+
+fn sky_uv_to_direction(uv: vec2<f32>) -> vec3<f32> {
+  let theta = uv.y * PI;
+  let lon = (uv.x - 0.5) * TAU;
+  let ring = sin(theta);
+  return vec3<f32>(cos(lon) * ring, cos(theta), sin(lon) * ring);
+}
+`;
+
+export const SKY_ATLAS_WGSL = /* wgsl */ `
+${SKY_COMMON_WGSL}
+
+@group(0) @binding(0) var milkyOut: texture_storage_2d<rgba16float, write>;
+@group(0) @binding(1) var starsOut: texture_storage_2d<rgba16float, write>;
+
+@compute @workgroup_size(8, 8)
+fn main(@builtin(global_invocation_id) id: vec3<u32>) {
+  let dims = textureDimensions(milkyOut);
+  if (id.x >= dims.x || id.y >= dims.y) {
+    return;
+  }
+
+  let uv = (vec2<f32>(f32(id.x), f32(id.y)) + vec2<f32>(0.5)) / vec2<f32>(f32(dims.x), f32(dims.y));
+  let d = sky_uv_to_direction(uv);
+  let milky = milky_way(d) * blackbody(5400.0) * 0.9;
+  let stars =
+    star_layer(d, 16.0, 0.22, 1.6, 1.0) +
+    star_layer(d, 33.0, 0.28, 0.85, 1.0) +
+    star_layer(d, 64.0, 0.33, 0.45, 1.0);
+
+  textureStore(milkyOut, vec2<i32>(i32(id.x), i32(id.y)), vec4<f32>(milky, 1.0));
+  textureStore(starsOut, vec2<i32>(i32(id.x), i32(id.y)), vec4<f32>(stars, 1.0));
+}
+`;
+
 export const TRACE_WGSL = /* wgsl */ `
 struct Uniforms {
   camPosition: vec4<f32>, // t, x, y, z
@@ -26,6 +163,9 @@ struct Uniforms {
 
 @group(0) @binding(0) var<uniform> u: Uniforms;
 @group(0) @binding(1) var outImage: texture_storage_2d<rgba16float, write>;
+@group(0) @binding(2) var skySampler: sampler;
+@group(0) @binding(3) var skyMilky: texture_2d<f32>;
+@group(0) @binding(4) var skyStars: texture_2d<f32>;
 
 // ---------------------------------------------------------------- geometry
 
@@ -133,106 +273,19 @@ fn rk4_from_d1(s: Phase, h: f32, d1: Derivative) -> Phase {
 
 // ---------------------------------------------------------------- shading
 
-fn blackbody(temp: f32) -> vec3<f32> {
-  let t = clamp(temp, 800.0, 40000.0) * 0.01;
-  var r = 1.0;
-  var g = 0.39 * log(t) - 0.632;
-  var b = 0.543 * log(max(t - 10.0, 1.0e-3)) - 1.196;
-  if (t > 66.0) {
-    r = 1.293 * pow(t - 60.0, -0.1332);
-    g = 1.13 * pow(t - 60.0, -0.0755);
-    b = 1.0;
-  }
-  return clamp(vec3<f32>(r, g, b), vec3<f32>(0.0), vec3<f32>(1.0));
-}
-
-fn hash31(p: vec3<f32>) -> f32 {
-  var q = fract(p * vec3<f32>(443.897, 441.423, 437.195));
-  q = q + dot(q, q.yzx + 19.19);
-  return fract((q.x + q.y) * q.z);
-}
-
-fn hash33(p: vec3<f32>) -> vec3<f32> {
-  var q = fract(p * vec3<f32>(443.897, 441.423, 437.195));
-  q = q + dot(q, q.yxz + 19.19);
-  return fract((q.xxy + q.yzz) * q.zyx);
-}
-
-fn vnoise(p: vec3<f32>) -> f32 {
-  let i = floor(p);
-  let w = fract(p);
-  let s = w * w * (3.0 - 2.0 * w);
-  let n000 = hash31(i);
-  let n100 = hash31(i + vec3<f32>(1.0, 0.0, 0.0));
-  let n010 = hash31(i + vec3<f32>(0.0, 1.0, 0.0));
-  let n110 = hash31(i + vec3<f32>(1.0, 1.0, 0.0));
-  let n001 = hash31(i + vec3<f32>(0.0, 0.0, 1.0));
-  let n101 = hash31(i + vec3<f32>(1.0, 0.0, 1.0));
-  let n011 = hash31(i + vec3<f32>(0.0, 1.0, 1.0));
-  let n111 = hash31(i + vec3<f32>(1.0, 1.0, 1.0));
-  return mix(
-    mix(mix(n000, n100, s.x), mix(n010, n110, s.x), s.y),
-    mix(mix(n001, n101, s.x), mix(n011, n111, s.x), s.y),
-    s.z
-  );
-}
-
-fn fbm(p: vec3<f32>) -> f32 {
-  var total = 0.0;
-  var amp = 0.5;
-  var q = p;
-  for (var i = 0; i < 4; i = i + 1) {
-    total = total + amp * vnoise(q);
-    q = q * 2.13 + vec3<f32>(7.7, 3.1, 1.9);
-    amp = amp * 0.5;
-  }
-  return total;
-}
-
-fn star_layer(dir: vec3<f32>, scale: f32, density: f32, gain: f32, gshift: f32) -> vec3<f32> {
-  let cell = floor(dir * scale);
-  let h = hash33(cell);
-  // Jitter stays inside the cell and the gaussian dies well before the cell
-  // boundary, so the single containing-cell lookup never shows seams.
-  let starDir = normalize(cell + 0.5 + (h - 0.5) * 0.6);
-  let c = dot(dir, starDir);
-  let ang2 = 2.0 * max(1.0 - c, 0.0) * scale * scale;
-  let pick = hash31(cell + 71.7);
-  let brightness = step(1.0 - density, pick) * pow(hash31(cell + 17.3), 5.0) * gain;
-  let temp = (2600.0 + 11000.0 * h.z * h.z) * gshift;
-  return blackbody(temp) * brightness * exp(-ang2 * 260.0);
-}
-
-const GALACTIC_POLE = vec3<f32>(0.184, 0.92, 0.353);
-const GALACTIC_CORE = vec3<f32>(0.927, 0.0, 0.375);
-
-fn milky_way(dir: vec3<f32>) -> vec3<f32> {
-  let pole = normalize(GALACTIC_POLE);
-  let sinLat = dot(dir, pole);
-  let band = exp(-sinLat * sinLat * 14.0);
-  if (band < 1.0e-3) {
-    return vec3<f32>(0.0);
-  }
-  let clouds = fbm(dir * 4.6 + 3.1);
-  let wisps = fbm(dir * 11.0 - 5.7);
-  let dust = smoothstep(0.5, 0.78, fbm(dir * 6.5 - 11.3)) * exp(-sinLat * sinLat * 70.0);
-  let core = pow(max(dot(dir, normalize(GALACTIC_CORE)), 0.0), 5.0);
-  let warm = vec3<f32>(1.0, 0.78, 0.55);
-  let cool = vec3<f32>(0.5, 0.62, 1.0);
-  let tint = mix(cool, warm, clamp(0.2 + 1.3 * core, 0.0, 1.0));
-  let glow = band * (0.3 + 0.55 * clouds + 0.35 * wisps * band) * (1.0 - 0.82 * dust) * (0.35 + 1.8 * core);
-  return tint * glow;
-}
+${SKY_COMMON_WGSL}
 
 // gshift = observed/emitted frequency ratio for light from infinity.
 fn sky_radiance(dir: vec3<f32>, gshift: f32) -> vec3<f32> {
   let d = normalize(dir);
+  let uv = sky_direction_to_uv(d);
   let g3 = clamp(gshift * gshift * gshift, 1.0e-4, 28.0);
+  let shiftTint = blackbody(5400.0 * gshift) / max(blackbody(5400.0), vec3<f32>(1.0e-3));
+  let milky = textureSampleLevel(skyMilky, skySampler, uv, 0.0).rgb * shiftTint;
+  let stars = textureSampleLevel(skyStars, skySampler, uv, 0.0).rgb * shiftTint;
   var col = vec3<f32>(0.012, 0.015, 0.028) * u.sky.z;
-  col = col + milky_way(d) * u.sky.y * blackbody(5400.0 * gshift) * 0.9;
-  col = col + u.sky.x * star_layer(d, 16.0, 0.22, 1.6, gshift);
-  col = col + u.sky.x * star_layer(d, 33.0, 0.28, 0.85, gshift);
-  col = col + u.sky.x * star_layer(d, 64.0, 0.33, 0.45, gshift);
+  col = col + milky * u.sky.y;
+  col = col + stars * u.sky.x;
   return col * g3;
 }
 

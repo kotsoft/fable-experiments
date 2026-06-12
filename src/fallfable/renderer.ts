@@ -8,7 +8,7 @@
 // sampler and tonemaps at display resolution.
 
 import { type Tetrad, type Vec4 } from './kerr';
-import { PRESENT_WGSL, TRACE_WGSL } from './shader';
+import { PRESENT_WGSL, SKY_ATLAS_WGSL, TRACE_WGSL } from './shader';
 
 export interface SceneFrame {
   /** Camera coordinate time (rays inherit it, so disk rotation sees delays). */
@@ -65,6 +65,8 @@ const MAX_DISPLAY_WIDTH = 1920;
 const TIMING_SLOT_COUNT = 4;
 const TIMESTAMP_QUERY_COUNT = 2;
 const TIMESTAMP_RESULT_BYTES = TIMESTAMP_QUERY_COUNT * 8;
+const SKY_ATLAS_WIDTH = 1024;
+const SKY_ATLAS_HEIGHT = 512;
 
 // The flag namespaces are runtime globals the TS lib in this project does not
 // declare; fall back to the spec-fixed bit values when they are absent.
@@ -92,9 +94,13 @@ export class FallfableRenderer {
   private context: GPUCanvasContext;
   private canvas: HTMLCanvasElement;
   private tracePipeline: GPUComputePipeline;
+  private skyPipeline: GPUComputePipeline;
   private presentPipeline: GPURenderPipeline;
   private uniformBuffer: GPUBuffer;
-  private sampler: GPUSampler;
+  private presentSampler: GPUSampler;
+  private skySampler: GPUSampler;
+  private skyMilkyTexture: GPUTexture;
+  private skyStarsTexture: GPUTexture;
   private uniforms = new Float32Array(UNIFORM_FLOATS);
 
   private traceTexture: GPUTexture | null = null;
@@ -131,6 +137,10 @@ export class FallfableRenderer {
       layout: 'auto',
       compute: { module: device.createShaderModule({ code: TRACE_WGSL }), entryPoint: 'main' },
     });
+    this.skyPipeline = device.createComputePipeline({
+      layout: 'auto',
+      compute: { module: device.createShaderModule({ code: SKY_ATLAS_WGSL }), entryPoint: 'main' },
+    });
     const presentModule = device.createShaderModule({ code: PRESENT_WGSL });
     this.presentPipeline = device.createRenderPipeline({
       layout: 'auto',
@@ -141,7 +151,16 @@ export class FallfableRenderer {
       size: UNIFORM_FLOATS * 4,
       usage: BUFFER_USAGE.UNIFORM | BUFFER_USAGE.COPY_DST,
     });
-    this.sampler = device.createSampler({ magFilter: 'linear', minFilter: 'linear' });
+    this.presentSampler = device.createSampler({ magFilter: 'linear', minFilter: 'linear' });
+    this.skySampler = device.createSampler({
+      addressModeU: 'repeat',
+      addressModeV: 'clamp-to-edge',
+      magFilter: 'linear',
+      minFilter: 'linear',
+    });
+    this.skyMilkyTexture = this.createSkyAtlasTexture('fallfable milky way atlas');
+    this.skyStarsTexture = this.createSkyAtlasTexture('fallfable star atlas');
+    this.generateSkyAtlas();
     if (device.features.has('timestamp-query')) {
       this.timestampSlots = Array.from({ length: TIMING_SLOT_COUNT }, () => ({
         querySet: device.createQuerySet({ type: 'timestamp', count: TIMESTAMP_QUERY_COUNT }),
@@ -351,16 +370,45 @@ export class FallfableRenderer {
       entries: [
         { binding: 0, resource: { buffer: this.uniformBuffer } },
         { binding: 1, resource: view },
+        { binding: 2, resource: this.skySampler },
+        { binding: 3, resource: this.skyMilkyTexture.createView() },
+        { binding: 4, resource: this.skyStarsTexture.createView() },
       ],
     });
     this.presentBindGroup = this.device.createBindGroup({
       layout: this.presentPipeline.getBindGroupLayout(0),
       entries: [
         { binding: 0, resource: view },
-        { binding: 1, resource: this.sampler },
+        { binding: 1, resource: this.presentSampler },
       ],
     });
     void frame;
+  }
+
+  private createSkyAtlasTexture(label: string): GPUTexture {
+    return this.device.createTexture({
+      label,
+      size: { width: SKY_ATLAS_WIDTH, height: SKY_ATLAS_HEIGHT },
+      format: 'rgba16float',
+      usage: TEXTURE_USAGE.STORAGE_BINDING | TEXTURE_USAGE.TEXTURE_BINDING,
+    });
+  }
+
+  private generateSkyAtlas(): void {
+    const bindGroup = this.device.createBindGroup({
+      layout: this.skyPipeline.getBindGroupLayout(0),
+      entries: [
+        { binding: 0, resource: this.skyMilkyTexture.createView() },
+        { binding: 1, resource: this.skyStarsTexture.createView() },
+      ],
+    });
+    const encoder = this.device.createCommandEncoder();
+    const pass = encoder.beginComputePass();
+    pass.setPipeline(this.skyPipeline);
+    pass.setBindGroup(0, bindGroup);
+    pass.dispatchWorkgroups(Math.ceil(SKY_ATLAS_WIDTH / 8), Math.ceil(SKY_ATLAS_HEIGHT / 8));
+    pass.end();
+    this.device.queue.submit([encoder.finish()]);
   }
 
   private packUniforms(frame: SceneFrame): void {
