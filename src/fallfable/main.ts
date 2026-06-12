@@ -104,6 +104,8 @@ diagnosticSelect.style.cssText =
   ['term', '1'],
   ['cost', '2'],
   ['cost+term', '3'],
+  ['classifier', '4'],
+  ['tile-classifier', '5'],
 ].forEach(([label, value]) => {
   const option = document.createElement('option');
   option.textContent = label;
@@ -434,7 +436,7 @@ function updateReadout(atSingularity: boolean): void {
 // ------------------------------------------------------------- benchmarking
 
 type QualityMode = 'auto' | number;
-type DiagnosticMode = 0 | 1 | 2 | 3;
+type DiagnosticMode = 0 | 1 | 2 | 3 | 4 | 5;
 
 interface FallfableViewSnapshot {
   state: PlayerState;
@@ -549,7 +551,7 @@ function currentDiagnosticMode(): DiagnosticMode {
 
 function normalizeDiagnosticMode(mode: unknown): DiagnosticMode {
   const value = Number(mode);
-  return (Number.isFinite(value) && value >= 0 && value <= 3 ? Math.floor(value) : 0) as DiagnosticMode;
+  return (Number.isFinite(value) && value >= 0 && value <= 5 ? Math.floor(value) : 0) as DiagnosticMode;
 }
 
 function setDiagnosticMode(mode: number): void {
@@ -1158,6 +1160,8 @@ function diagnosticModeFromParams(params: URLSearchParams): DiagnosticMode {
   if (raw === 'term' || raw === 'termination') return 1;
   if (raw === 'cost') return 2;
   if (raw === 'combined' || raw === 'cost+term') return 3;
+  if (raw === 'class' || raw === 'classifier' || raw === 'grid-classifier') return 4;
+  if (raw === 'tile' || raw === 'tile-classifier' || raw === 'adaptive-mask') return 5;
   return normalizeDiagnosticMode(raw);
 }
 

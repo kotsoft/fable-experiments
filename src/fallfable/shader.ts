@@ -495,7 +495,13 @@ fn disk_sample(pos: vec4<f32>, mom: vec4<f32>, dl: f32) -> DiskSample {
 
 // ---------------------------------------------------------------- trace
 
-fn trace(px: vec2<f32>, dims: vec2<f32>) -> vec3<f32> {
+struct TraceResult {
+  color: vec3<f32>,
+  status: f32,
+  steps: f32,
+};
+
+fn trace_result_mode(px: vec2<f32>, dims: vec2<f32>, shadeSky: bool) -> TraceResult {
   let spin = u.geo.x;
   let mass = u.geo.y;
   let baseStep = u.geo.z;
@@ -567,8 +573,10 @@ fn trace(px: vec2<f32>, dims: vec2<f32>) -> vec3<f32> {
     }
     if (escaped) {
       // p_t is conserved; for past-directed q the sky shift is 1 / q_t.
-      let gshift = 1.0 / max(state.momentum.x, 1.0e-4);
-      color = color + trans * sky_radiance(v, gshift);
+      if (shadeSky) {
+        let gshift = 1.0 / max(state.momentum.x, 1.0e-4);
+        color = color + trans * sky_radiance(v, gshift);
+      }
       trans = 0.0;
       debugStatus = 4.0;
       break;
@@ -592,17 +600,70 @@ fn trace(px: vec2<f32>, dims: vec2<f32>) -> vec3<f32> {
     state = rk4_from_d1(state, h, d1);
   }
 
+  return TraceResult(color, debugStatus, stepsTaken);
+}
+
+fn trace_result(px: vec2<f32>, dims: vec2<f32>) -> TraceResult {
+  return trace_result_mode(px, dims, true);
+}
+
+fn trace_linear_cost(result: TraceResult) -> f32 {
+  return clamp(result.steps / max(u.march.x, 1.0), 0.0, 1.0);
+}
+
+fn trace_cost(result: TraceResult) -> f32 {
+  return pow(trace_linear_cost(result), 0.55);
+}
+
+fn trace_debug_color(result: TraceResult) -> vec3<f32> {
+  let cost = trace_cost(result);
   if (u.sky.w > 0.5) {
-    let cost = pow(clamp(stepsTaken / max(u.march.x, 1.0), 0.0, 1.0), 0.55);
     if (u.sky.w < 1.5) {
-      return termination_color(debugStatus);
+      return termination_color(result.status);
     }
     if (u.sky.w < 2.5) {
       return cost_color(cost);
     }
-    return termination_color(debugStatus) * (0.16 + 1.85 * cost);
+    return termination_color(result.status) * (0.16 + 1.85 * cost);
   }
-  return color;
+  return result.color;
+}
+
+fn trace(px: vec2<f32>, dims: vec2<f32>) -> vec3<f32> {
+  return trace_debug_color(trace_result(px, dims));
+}
+
+fn classifier_color(result: TraceResult) -> vec3<f32> {
+  let cost = trace_cost(result);
+  if (result.status == 4.0 && cost < 0.38) {
+    return mix(vec3<f32>(0.015, 0.07, 0.19), vec3<f32>(0.0, 0.34, 0.88), cost / 0.38);
+  }
+  if ((result.status == 2.0 || result.status == 3.0) && cost < 0.42) {
+    return mix(vec3<f32>(0.10, 0.01, 0.015), vec3<f32>(0.62, 0.04, 0.12), cost / 0.42);
+  }
+  return termination_color(result.status) * (0.16 + 1.85 * cost);
+}
+
+fn worse_trace(a: TraceResult, b: TraceResult) -> TraceResult {
+  if (trace_linear_cost(b) > trace_linear_cost(a)) {
+    return b;
+  }
+  return a;
+}
+
+fn store_block(origin: vec2<u32>, blockSize: u32, dims: vec2<u32>, color: vec3<f32>) {
+  for (var oy = 0u; oy < blockSize; oy = oy + 1u) {
+    let y = origin.y + oy;
+    if (y >= dims.y) {
+      continue;
+    }
+    for (var ox = 0u; ox < blockSize; ox = ox + 1u) {
+      let x = origin.x + ox;
+      if (x < dims.x) {
+        textureStore(outImage, vec2<i32>(i32(x), i32(y)), vec4<f32>(color, 1.0));
+      }
+    }
+  }
 }
 
 @compute @workgroup_size(8, 8)
@@ -613,6 +674,35 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
   }
   let rgb = trace(vec2<f32>(f32(id.x), f32(id.y)), vec2<f32>(f32(dims.x), f32(dims.y)));
   textureStore(outImage, vec2<i32>(i32(id.x), i32(id.y)), vec4<f32>(rgb, 1.0));
+}
+
+@compute @workgroup_size(8, 8)
+fn classify_grid_main(@builtin(global_invocation_id) id: vec3<u32>) {
+  let dims = textureDimensions(outImage);
+  let classDims = (dims + vec2<u32>(3u, 3u)) / vec2<u32>(4u, 4u);
+  if (id.x >= classDims.x || id.y >= classDims.y) {
+    return;
+  }
+  let origin = id.xy * 4u;
+  let samplePx = vec2<f32>(f32(origin.x) + 1.5, f32(origin.y) + 1.5);
+  let result = trace_result_mode(samplePx, vec2<f32>(f32(dims.x), f32(dims.y)), false);
+  store_block(origin, 4u, dims, classifier_color(result));
+}
+
+@compute @workgroup_size(8, 8)
+fn classify_tile_main(@builtin(global_invocation_id) id: vec3<u32>) {
+  let dims = textureDimensions(outImage);
+  let tileDims = (dims + vec2<u32>(7u, 7u)) / vec2<u32>(8u, 8u);
+  if (id.x >= tileDims.x || id.y >= tileDims.y) {
+    return;
+  }
+  let origin = id.xy * 8u;
+  let fullDims = vec2<f32>(f32(dims.x), f32(dims.y));
+  var best = trace_result_mode(vec2<f32>(f32(origin.x) + 1.5, f32(origin.y) + 1.5), fullDims, false);
+  best = worse_trace(best, trace_result_mode(vec2<f32>(f32(origin.x) + 5.5, f32(origin.y) + 1.5), fullDims, false));
+  best = worse_trace(best, trace_result_mode(vec2<f32>(f32(origin.x) + 1.5, f32(origin.y) + 5.5), fullDims, false));
+  best = worse_trace(best, trace_result_mode(vec2<f32>(f32(origin.x) + 5.5, f32(origin.y) + 5.5), fullDims, false));
+  store_block(origin, 8u, dims, classifier_color(best));
 }
 `;
 

@@ -42,7 +42,7 @@ export interface RendererOptions {
     starIntensity: number;
     milkyWayIntensity: number;
     ambient: number;
-    /** 0 normal, 1 termination branches, 2 trace cost, 3 cost-weighted branches. */
+    /** 0 normal, 1 termination, 2 cost, 3 cost+term, 4 4x4 classifier, 5 8x8 tile classifier. */
     debugStatus?: number;
   };
 }
@@ -94,6 +94,8 @@ export class FallfableRenderer {
   private context: GPUCanvasContext;
   private canvas: HTMLCanvasElement;
   private tracePipeline: GPUComputePipeline;
+  private classifierGridPipeline: GPUComputePipeline;
+  private classifierTilePipeline: GPUComputePipeline;
   private skyPipeline: GPUComputePipeline;
   private presentPipeline: GPURenderPipeline;
   private uniformBuffer: GPUBuffer;
@@ -104,6 +106,8 @@ export class FallfableRenderer {
 
   private traceTexture: GPUTexture | null = null;
   private traceBindGroup: GPUBindGroup | null = null;
+  private classifierGridBindGroup: GPUBindGroup | null = null;
+  private classifierTileBindGroup: GPUBindGroup | null = null;
   private presentBindGroup: GPUBindGroup | null = null;
   private traceWidth = 0;
   private traceHeight = 0;
@@ -132,9 +136,18 @@ export class FallfableRenderer {
     this.canvas = canvas;
     this.options = options;
 
+    const traceModule = device.createShaderModule({ code: TRACE_WGSL });
     this.tracePipeline = device.createComputePipeline({
       layout: 'auto',
-      compute: { module: device.createShaderModule({ code: TRACE_WGSL }), entryPoint: 'main' },
+      compute: { module: traceModule, entryPoint: 'main' },
+    });
+    this.classifierGridPipeline = device.createComputePipeline({
+      layout: 'auto',
+      compute: { module: traceModule, entryPoint: 'classify_grid_main' },
+    });
+    this.classifierTilePipeline = device.createComputePipeline({
+      layout: 'auto',
+      compute: { module: traceModule, entryPoint: 'classify_tile_main' },
     });
     this.skyPipeline = device.createComputePipeline({
       layout: 'auto',
@@ -229,6 +242,10 @@ export class FallfableRenderer {
     this.packUniforms(frame);
     this.device.queue.writeBuffer(this.uniformBuffer, 0, this.uniforms);
     const timingSlot = this.takeTimestampSlot();
+    const diagnosticMode = Math.floor(this.options.sky.debugStatus ?? 0);
+    const classifierBlockSize = diagnosticMode === 4 ? 4 : diagnosticMode === 5 ? 8 : 0;
+    if (classifierBlockSize === 4 && !this.classifierGridBindGroup) return false;
+    if (classifierBlockSize === 8 && !this.classifierTileBindGroup) return false;
 
     const encoder = this.device.createCommandEncoder();
     const compute = encoder.beginComputePass(timingSlot
@@ -239,9 +256,19 @@ export class FallfableRenderer {
           },
         }
       : undefined);
-    compute.setPipeline(this.tracePipeline);
-    compute.setBindGroup(0, this.traceBindGroup);
-    compute.dispatchWorkgroups(Math.ceil(this.traceWidth / 8), Math.ceil(this.traceHeight / 8));
+    if (classifierBlockSize > 0) {
+      const classifierBindGroup = classifierBlockSize === 4 ? this.classifierGridBindGroup : this.classifierTileBindGroup;
+      compute.setPipeline(classifierBlockSize === 4 ? this.classifierGridPipeline : this.classifierTilePipeline);
+      compute.setBindGroup(0, classifierBindGroup);
+      compute.dispatchWorkgroups(
+        Math.ceil(Math.ceil(this.traceWidth / classifierBlockSize) / 8),
+        Math.ceil(Math.ceil(this.traceHeight / classifierBlockSize) / 8),
+      );
+    } else {
+      compute.setPipeline(this.tracePipeline);
+      compute.setBindGroup(0, this.traceBindGroup);
+      compute.dispatchWorkgroups(Math.ceil(this.traceWidth / 8), Math.ceil(this.traceHeight / 8));
+    }
     compute.end();
 
     const pass = encoder.beginRenderPass({
@@ -355,6 +382,8 @@ export class FallfableRenderer {
     if (w === this.traceWidth && h === this.traceHeight && this.traceTexture) return;
 
     this.traceTexture?.destroy();
+    this.classifierGridBindGroup = null;
+    this.classifierTileBindGroup = null;
     this.traceTexture = this.device.createTexture({
       size: { width: w, height: h },
       format: 'rgba16float',
@@ -363,14 +392,23 @@ export class FallfableRenderer {
     this.traceWidth = w;
     this.traceHeight = h;
     const view = this.traceTexture.createView();
+    const traceEntries: GPUBindGroupEntry[] = [
+      { binding: 0, resource: { buffer: this.uniformBuffer } },
+      { binding: 1, resource: view },
+      { binding: 2, resource: this.skySampler },
+      { binding: 3, resource: this.skyMilkyTexture.createView() },
+    ];
     this.traceBindGroup = this.device.createBindGroup({
       layout: this.tracePipeline.getBindGroupLayout(0),
-      entries: [
-        { binding: 0, resource: { buffer: this.uniformBuffer } },
-        { binding: 1, resource: view },
-        { binding: 2, resource: this.skySampler },
-        { binding: 3, resource: this.skyMilkyTexture.createView() },
-      ],
+      entries: traceEntries,
+    });
+    this.classifierGridBindGroup = this.device.createBindGroup({
+      layout: this.classifierGridPipeline.getBindGroupLayout(0),
+      entries: traceEntries,
+    });
+    this.classifierTileBindGroup = this.device.createBindGroup({
+      layout: this.classifierTilePipeline.getBindGroupLayout(0),
+      entries: traceEntries,
     });
     this.presentBindGroup = this.device.createBindGroup({
       layout: this.presentPipeline.getBindGroupLayout(0),
