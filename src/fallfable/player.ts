@@ -33,10 +33,12 @@ export const ERGOSPHERE = 2 * PARAMS.mass;
 export const ISCO = iscoRadius(PARAMS, true);
 export const PHOTON_PROGRADE = photonOrbitRadius(PARAMS, true);
 export const PHOTON_RETROGRADE = photonOrbitRadius(PARAMS, false);
-export const SINGULARITY_CUTOFF = 0.05;
+export const SINGULARITY_CUTOFF = 0.02;
 export const MAP_RADIUS = 16;
 export const DISK_INNER = ISCO;
 export const DISK_OUTER = 13;
+const MANUAL_CARRY_HORIZONTAL_SCALE = 0.992;
+const MANUAL_CARRY_VERTICAL_SCALE = 0.96;
 
 export interface PlayerState extends PhaseState {
   r: number;
@@ -101,7 +103,7 @@ export function stepPlayer(state: PlayerState, dTau: number): PlayerState {
   while (remaining > 1e-9) {
     // Substep shrinks like r^2 so the integrator survives the violent
     // gradients near the ring region deep inside the inner horizon.
-    const h = Math.min(remaining, Math.max(2e-5, 0.004 * Math.min(r * r, 1)));
+    const h = Math.min(remaining, Math.max(2e-6, 0.0025 * Math.min(r * r * r, 1)));
     phase = rk4Step(phase, PARAMS, h);
     advanced += h;
     remaining -= h;
@@ -111,9 +113,30 @@ export function stepPlayer(state: PlayerState, dTau: number): PlayerState {
     }
   }
   const next: PlayerState = { ...phase, r, tau: state.tau + advanced };
-  if (constraintResidual(next) > 1e-3) {
-    // The geometry won; freeze the worldline rather than display garbage.
-    return { ...state, ended: true };
+  if (constraintResidual(next) > 0.05) {
+    if (state.r > INNER_HORIZON * 2) {
+      return { ...state, ended: true };
+    }
+    // A generic worldline cannot be smoothly continued through the Cauchy
+    // horizon in this chart (its momentum diverges on the sheet the ingoing
+    // coordinates do not cover) - and beyond it GR is non-deterministic
+    // anyway. Carry the indestructible observer inward by hand, at rest in
+    // the always-timelike Eulerian frame.
+    // The fallback is tuned to contract x/y gently for visual continuity while
+    // damping z faster so off-plane numerical drift settles back toward the disk.
+    const p: Vec3 = {
+      x: state.position.x * MANUAL_CARRY_HORIZONTAL_SCALE,
+      y: state.position.y * MANUAL_CARRY_HORIZONTAL_SCALE,
+      z: state.position.z * MANUAL_CARRY_VERTICAL_SCALE,
+    };
+    const u = eulerianObserver(p, PARAMS);
+    return makeState(
+      {
+        position: { t: state.position.t + dTau, ...p },
+        momentum: lowerVector(p, PARAMS, u),
+      },
+      state.tau + dTau,
+    );
   }
   return next;
 }

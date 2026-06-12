@@ -34,6 +34,9 @@ export interface RendererOptions {
     spinDirection: number;
     scaleHeight: number;
     absorption: number;
+    /** Texture/hotspot time runs this much faster than coordinate time. */
+    animationScale: number;
+    hotspotIntensity: number;
   };
   sky: {
     starIntensity: number;
@@ -51,7 +54,7 @@ export interface RendererStats {
   scale: number;
 }
 
-const UNIFORM_FLOATS = 40;
+const UNIFORM_FLOATS = 44;
 const MAX_IN_FLIGHT = 2;
 const MAX_DISPLAY_WIDTH = 1920;
 
@@ -271,6 +274,10 @@ export class FallfableRenderer {
     u[37] = o.sky.milkyWayIntensity;
     u[38] = o.sky.ambient;
     u[39] = o.sky.debugStatus ?? 0;
+    u[40] = o.disk.animationScale;
+    u[41] = o.disk.hotspotIntensity;
+    u[42] = 0;
+    u[43] = 0;
   }
 }
 

@@ -45,7 +45,8 @@
         color: #b8c4d8;
       }
       figure { margin: 1.6rem 0; }
-      figure canvas {
+      figure canvas,
+      figure svg {
         display: block;
         width: 100%;
         height: auto;
@@ -64,6 +65,7 @@
       }
       .controls input[type="range"] { flex: 1; accent-color: var(--accent); }
       .controls output { min-width: 13rem; color: var(--fg); font-variant-numeric: tabular-nums; }
+      .controls.compact output { min-width: 14rem; }
       .note { font-size: 0.88rem; color: var(--dim); border-left: 2px solid var(--line); padding-left: 0.9rem; }
       details {
         border: 1px solid var(--line);
@@ -112,6 +114,53 @@
         the event horizon. The renderer works in units where <var>r<sub>s</sub></var> = 1 and
         <var>c</var> = 1 (so <var>M</var> = ½), which makes every formula below pleasantly small.
       </p>
+      <p>
+        Two small notation traps are hiding in that line. First, <var>ds</var> is one symbol:
+        the tiny spacetime interval that the metric computes from small coordinate changes like
+        <var>dt</var>, <var>dr</var>, and <var>dφ</var>. For light, <var>ds²</var> is exactly zero,
+        which is why photon paths are called null. Second, the <var>s</var> in
+        <var>r<sub>s</sub></var> is just a subscript label for "Schwarzschild"; it is not the same
+        <var>s</var> as the interval in <var>ds</var>.
+      </p>
+      <p>
+        One symbol is doing compact notation here: <var>dΩ</var> is the tiny angular separation on
+        a unit sphere:
+      </p>
+      <p class="eq">
+        dΩ² = dθ² + sin²θ dφ²
+      </p>
+      <p>
+        This is <em>not</em> disk rotation yet. It just says that the angular part of the distance
+        grows like <var>r</var> times an angle. Most diagrams below live in one ray plane, where
+        <var>θ</var> is fixed and that angular piece reduces to ordinary changes in <var>φ</var>.
+      </p>
+      <p>
+        The whole metric is easiest to read as three live scale factors. Mass sets the physical
+        Schwarzschild radius; your position <var>r/r<sub>s</sub></var> sets how strongly time and
+        radial distance are warped; the angular term turns a small angle into a real arc length.
+      </p>
+      <div class="controls compact">
+        <label for="metricMass">mass M</label>
+        <input id="metricMass" type="range" min="-1" max="10" step="0.01" value="6.6" />
+        <output id="metricMassReadout"></output>
+      </div>
+      <div class="controls compact">
+        <label for="metricRadius">position r/r<sub>s</sub></label>
+        <input id="metricRadius" type="range" min="1.05" max="8" step="0.01" value="3" />
+        <output id="metricRadiusReadout"></output>
+      </div>
+      <div class="controls compact">
+        <label for="metricAngle">angle dφ</label>
+        <input id="metricAngle" type="range" min="1" max="45" step="0.5" value="10" />
+        <output id="metricAngleReadout"></output>
+      </div>
+      <figure>
+        <svg id="metricExplorer" viewBox="0 0 800 500" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Interactive Schwarzschild metric explorer showing time, radial, and angular terms"></svg>
+        <figcaption>
+          Mass and Schwarzschild radius move together: <var>r<sub>s</sub></var> = 2<var>GM</var>/<var>c</var>².
+          The sliders show what each part of the metric does at the selected radius.
+        </figcaption>
+      </figure>
 
       <h2>2 — How light bends</h2>
       <p>Photons follow <em>null geodesics</em> of that metric.</p>
@@ -206,6 +255,25 @@ acc = -G * M * pos / pow(r, 3.0);    // pull toward center, strength ∝ 1/r²
 
 // Schwarzschild photon (this renderer):
 acc = -1.5 * h2 * pos / pow(r, 5.0); // pull toward center, strength ∝ 1/r⁴</code></pre>
+        <div class="controls compact">
+          <label for="forceRadius">compare at r</label>
+          <input id="forceRadius" type="range" min="1.05" max="10" step="0.01" value="3" />
+          <output id="forceRadiusReadout"></output>
+        </div>
+        <div class="controls compact">
+          <label for="forceH">photon h</label>
+          <input id="forceH" type="range" min="0.5" max="5" step="0.01" value="2.6" />
+          <output id="forceHReadout"></output>
+        </div>
+        <figure>
+          <svg id="forceLawCompare" viewBox="0 0 800 440" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Interactive comparison of Newtonian inverse-square gravity and Schwarzschild photon inverse-fourth curvature acceleration"></svg>
+          <figcaption>
+            Both formulas point along <code>pos</code>. That vector already has length
+            <var>r</var>, so <code>pos / r³</code> has magnitude 1/r², while
+            <code>h² pos / r⁵</code> has magnitude h²/r⁴. The photon curve changes with the ray's
+            conserved <var>h</var>.
+          </figcaption>
+        </figure>
         <p>
           Same loop, same integrator, same <code>cross</code> and <code>dot</code> products. The
           only difference is the exponent and the per-ray constant <var>h</var>². So where did all
@@ -270,26 +338,25 @@ metric / curvature    →  baked into the force law's exponent
         Drag the slider through <var>b<sub>c</sub></var> and watch the ray wrap more and more
         before the outcome flips:
       </p>
+      <p class="note">
+        The top picture is a top-down slice through the photon's orbital plane, not an edge-on side
+        view. Photons enter from the right; large <var>b</var> rays bend around and keep going left,
+        while small <var>b</var> rays fall through the horizon. The lower plot is not a place in
+        space; it is the radial capture rule that explains why the photon sphere is the threshold.
+      </p>
       <div class="controls">
         <label for="bSlider">impact parameter b</label>
-        <input id="bSlider" type="range" min="0.4" max="6" step="0.005" value="2.75" />
+        <input id="bSlider" type="range" min="0.4" max="6" step="0.005" value="2.625" />
         <output id="bReadout"></output>
       </div>
       <figure>
-        <canvas id="rayFan" width="1280" height="800"></canvas>
+        <canvas id="rayFan" width="1280" height="1240"></canvas>
         <figcaption>
-          Computed photon paths (same integrator as the shader). Solid disk: horizon
-          (r = r<sub>s</sub>). Dashed: photon sphere (1.5 r<sub>s</sub>). The white ray is the
-          slider's; red rays fall in, the rest escape.
-        </figcaption>
-      </figure>
-      <figure>
-        <canvas id="potential" width="1280" height="560"></canvas>
-        <figcaption>
-          Why b<sub>c</sub> exists: radial motion obeys (dr/dλ)² = 1/b² − V(r) with effective
-          potential V(r) = (1 − r<sub>s</sub>/r)/r². If the 1/b² line clears the peak (which sits
-          exactly at r = 1.5 r<sub>s</sub>), the photon falls in; otherwise it reflects off the
-          potential at the marked turning point.
+          Top: computed photon paths in one ray plane. Photons enter from the right; blue rays escape
+          left, and red rays are captured; the faint segment inside the horizon keeps following the
+          same integration toward the singularity. Bottom: not space, but the effective-potential rule
+          (dr/dλ)² = 1/b² − V(r). If the slider's 1/b² line clears the photon-sphere peak, the ray
+          falls in; otherwise it reaches the marked turning point and escapes.
         </figcaption>
       </figure>
       <p>
@@ -334,10 +401,36 @@ transmittance *= exp(-absorption * dt);</code></pre>
       <p>
         Gas temperature follows the Shakura–Sunyaev thin-disk profile
         <var>T</var> ∝ <var>r</var><sup>−3/4</sup>, and each sample emits blackbody light at its
-        local temperature. The streaky texture is fractal noise sheared by differential rotation:
+        local temperature. The streaky texture is fractal noise sheared by differential rotation.
+        Here the symbol <var>Ω(r)</var> means <em>angular velocity</em>: how fast a ring's angle
+        <var>φ</var> changes with coordinate time. For the Schwarzschild disk texture the shader
+        uses the Keplerian rate
+      </p>
+      <p class="eq">
+        Ω(r) = √M / r<sup>3/2</sup> = 1 / √(2r³)
+      </p>
+      <p>
+        because our units set <var>M</var> = ½. The key behavior is the power law:
         inner gas orbits faster (Ω ∝ <var>r</var><sup>−3/2</sup>), so any blob stretches into a
         trailing spiral on its own.
       </p>
+      <div class="controls compact">
+        <label for="omegaRadius">radius r</label>
+        <input id="omegaRadius" type="range" min="3" max="14" step="0.05" value="5" />
+        <output id="omegaRadiusReadout"></output>
+      </div>
+      <div class="controls compact">
+        <label for="omegaTime">time t</label>
+        <input id="omegaTime" type="range" min="0" max="180" step="0.5" value="70" />
+        <output id="omegaTimeReadout"></output>
+      </div>
+      <figure>
+        <svg id="omegaDisk" viewBox="0 0 800 470" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Interactive disk rings showing angular velocity Omega as a function of radius"></svg>
+        <figcaption>
+          The same time step rotates inner rings farther than outer rings. The selected blob follows
+          <var>φ(t) = Ω(r)t</var>; the curve at right shows how quickly Ω falls with radius.
+        </figcaption>
+      </figure>
       <p>
         The iconic look — the disk visible <em>above and below</em> the shadow even though it is
         flat and edge-on — is nothing but lensing. Rays leaving the camera slightly upward bend
@@ -347,9 +440,9 @@ transmittance *= exp(-absorption * dt);</code></pre>
       <figure>
         <canvas id="sideView" width="1280" height="760"></canvas>
         <figcaption>
-          Side view, computed paths. The camera sits just above the disk plane (right). Orange dots:
-          rays landing on the disk directly. Blue dots: rays that bent over or under the hole and
-          hit the far side — these form the arcs above and below the shadow.
+          Side view, computed paths. The animated packets leave the camera along a few representative
+          rays. Orange dots: rays landing on the disk directly. Blue dots: rays that bent over or
+          under the hole and hit the far side — these form the arcs above and below the shadow.
         </figcaption>
       </figure>
 
