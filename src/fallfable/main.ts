@@ -472,6 +472,8 @@ interface FallfableBenchmarkResult {
   maxGpuMs: number;
   totalGpuMs: number;
   gpuFramesPerSecond: number;
+  passMedianGpuMs: Record<string, number>;
+  passP95GpuMs: Record<string, number>;
   sampleDurationMs: number;
   completedFramesPerSecond: number;
   samplesGpuMs: number[];
@@ -848,10 +850,31 @@ function summarizeTimings(
     maxGpuMs: sorted[sorted.length - 1] ?? 0,
     totalGpuMs: sum,
     gpuFramesPerSecond: sum > 0 ? (samples.length * 1000) / sum : 0,
+    passMedianGpuMs: summarizePassTimings(timings, 0.5),
+    passP95GpuMs: summarizePassTimings(timings, 0.95),
     sampleDurationMs,
     completedFramesPerSecond: sampleDurationMs > 0 ? (samples.length * 1000) / sampleDurationMs : 0,
     samplesGpuMs: samples,
   };
+}
+
+function summarizePassTimings(timings: RendererFrameTiming[], fraction: number): Record<string, number> {
+  const passes = [
+    ['classifier', 'classifierGpuMs'],
+    ['trace', 'traceGpuMs'],
+    ['output', 'outputGpuMs'],
+    ['present', 'presentGpuMs'],
+  ] as const;
+  const summary: Record<string, number> = {};
+  for (const [name, field] of passes) {
+    const values = timings
+      .map((timing) => timing[field])
+      .filter((value): value is number => Number.isFinite(value));
+    if (values.length > 0) {
+      summary[name] = percentile([...values].sort((a, b) => a - b), fraction);
+    }
+  }
+  return summary;
 }
 
 async function huntFrameSpike(options: FallfableSpikeHuntOptions = {}): Promise<FallfableSpikeHuntResult> {

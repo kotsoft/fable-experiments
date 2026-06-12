@@ -57,13 +57,17 @@ export interface RendererStats {
 
 export interface RendererFrameTiming extends RendererStats {
   completedAt: number;
+  classifierGpuMs?: number;
+  traceGpuMs?: number;
+  outputGpuMs?: number;
+  presentGpuMs?: number;
 }
 
 const UNIFORM_FLOATS = 44;
 const MAX_IN_FLIGHT = 2;
 const MAX_DISPLAY_WIDTH = 1920;
 const TIMING_SLOT_COUNT = 4;
-const TIMESTAMP_QUERY_COUNT = 2;
+const TIMESTAMP_QUERY_COUNT = 6;
 const TIMESTAMP_RESULT_BYTES = TIMESTAMP_QUERY_COUNT * 8;
 const SKY_ATLAS_WIDTH = 1024;
 const SKY_ATLAS_HEIGHT = 512;
@@ -87,6 +91,17 @@ interface TimestampSlot {
   resolveBuffer: GPUBuffer;
   readbackBuffer: GPUBuffer;
   busy: boolean;
+}
+
+type TimestampRange = readonly [number, number];
+
+interface TimestampPlan {
+  queryCount: number;
+  total: TimestampRange;
+  classifier?: TimestampRange;
+  trace?: TimestampRange;
+  output?: TimestampRange;
+  present?: TimestampRange;
 }
 
 export class FallfableRenderer {
@@ -250,14 +265,31 @@ export class FallfableRenderer {
     if (needsClassifier && (!this.classifierTexture || !this.classifierFeatureBindGroup || !this.classifierVisualBindGroup)) {
       return false;
     }
+    const timingPlan: TimestampPlan | null = timingSlot
+      ? needsClassifier
+        ? {
+            queryCount: 6,
+            total: [0, 5],
+            classifier: [0, 1],
+            output: [2, 3],
+            present: [4, 5],
+          }
+        : {
+            queryCount: 4,
+            total: [0, 3],
+            trace: [0, 1],
+            present: [2, 3],
+          }
+      : null;
 
     const encoder = this.device.createCommandEncoder();
     if (needsClassifier) {
-      const classify = encoder.beginComputePass(timingSlot
+      const classify = encoder.beginComputePass(timingSlot && timingPlan?.classifier
         ? {
             timestampWrites: {
               querySet: timingSlot.querySet,
-              beginningOfPassWriteIndex: 0,
+              beginningOfPassWriteIndex: timingPlan.classifier[0],
+              endOfPassWriteIndex: timingPlan.classifier[1],
             },
           }
         : undefined);
@@ -266,17 +298,26 @@ export class FallfableRenderer {
       classify.dispatchWorkgroups(Math.ceil(this.classifierWidth / 8), Math.ceil(this.classifierHeight / 8));
       classify.end();
 
-      const visualize = encoder.beginComputePass();
+      const visualize = encoder.beginComputePass(timingSlot && timingPlan?.output
+        ? {
+            timestampWrites: {
+              querySet: timingSlot.querySet,
+              beginningOfPassWriteIndex: timingPlan.output[0],
+              endOfPassWriteIndex: timingPlan.output[1],
+            },
+          }
+        : undefined);
       visualize.setPipeline(this.classifierVisualPipeline);
       visualize.setBindGroup(0, this.classifierVisualBindGroup);
       visualize.dispatchWorkgroups(Math.ceil(this.traceWidth / 8), Math.ceil(this.traceHeight / 8));
       visualize.end();
     } else {
-      const compute = encoder.beginComputePass(timingSlot
+      const compute = encoder.beginComputePass(timingSlot && timingPlan?.trace
         ? {
             timestampWrites: {
               querySet: timingSlot.querySet,
-              beginningOfPassWriteIndex: 0,
+              beginningOfPassWriteIndex: timingPlan.trace[0],
+              endOfPassWriteIndex: timingPlan.trace[1],
             },
           }
         : undefined);
@@ -295,10 +336,11 @@ export class FallfableRenderer {
           storeOp: 'store',
         },
       ],
-      timestampWrites: timingSlot
+      timestampWrites: timingSlot && timingPlan?.present
         ? {
             querySet: timingSlot.querySet,
-            endOfPassWriteIndex: 1,
+            beginningOfPassWriteIndex: timingPlan.present[0],
+            endOfPassWriteIndex: timingPlan.present[1],
           }
         : undefined,
     });
@@ -306,9 +348,10 @@ export class FallfableRenderer {
     pass.setBindGroup(0, this.presentBindGroup);
     pass.draw(3);
     pass.end();
-    if (timingSlot) {
-      encoder.resolveQuerySet(timingSlot.querySet, 0, TIMESTAMP_QUERY_COUNT, timingSlot.resolveBuffer, 0);
-      encoder.copyBufferToBuffer(timingSlot.resolveBuffer, 0, timingSlot.readbackBuffer, 0, TIMESTAMP_RESULT_BYTES);
+    if (timingSlot && timingPlan) {
+      const timingBytes = timingPlan.queryCount * 8;
+      encoder.resolveQuerySet(timingSlot.querySet, 0, timingPlan.queryCount, timingSlot.resolveBuffer, 0);
+      encoder.copyBufferToBuffer(timingSlot.resolveBuffer, 0, timingSlot.readbackBuffer, 0, timingBytes);
     }
 
     const submittedWidth = this.traceWidth;
@@ -319,8 +362,8 @@ export class FallfableRenderer {
     void this.device.queue.onSubmittedWorkDone().finally(() => {
       this.inFlight = Math.max(0, this.inFlight - 1);
     });
-    if (timingSlot) {
-      void this.readTimestampSlot(timingSlot, submittedWidth, submittedHeight, submittedScale);
+    if (timingSlot && timingPlan) {
+      void this.readTimestampSlot(timingSlot, submittedWidth, submittedHeight, submittedScale, timingPlan);
     }
     return true;
   }
@@ -339,20 +382,27 @@ export class FallfableRenderer {
     return null;
   }
 
-  private async readTimestampSlot(slot: TimestampSlot, width: number, height: number, scale: number): Promise<void> {
+  private async readTimestampSlot(
+    slot: TimestampSlot,
+    width: number,
+    height: number,
+    scale: number,
+    plan: TimestampPlan,
+  ): Promise<void> {
     let mapped = false;
     try {
       await slot.readbackBuffer.mapAsync(MAP_MODE.READ, 0, TIMESTAMP_RESULT_BYTES);
       mapped = true;
       const data = new BigUint64Array(slot.readbackBuffer.getMappedRange(0, TIMESTAMP_RESULT_BYTES));
-      const begin = data[0];
-      const end = data[1];
-      const durationNs = end > begin ? end - begin : 0n;
-      const gpuMs = Number(durationNs) / 1_000_000;
+      const gpuMs = timestampDurationMs(data, plan.total) ?? 0;
       const completedAt = performance.now();
       this.gpuMsEma = Number.isFinite(this.gpuMsEma) ? this.gpuMsEma + (gpuMs - this.gpuMsEma) * 0.12 : gpuMs;
       this.frameTimings.push({
         gpuMs,
+        classifierGpuMs: timestampDurationMs(data, plan.classifier),
+        traceGpuMs: timestampDurationMs(data, plan.trace),
+        outputGpuMs: timestampDurationMs(data, plan.output),
+        presentGpuMs: timestampDurationMs(data, plan.present),
         width,
         height,
         scale,
@@ -526,4 +576,12 @@ function packVec4(target: Float32Array, offset: number, v: Vec4): void {
   target[offset + 1] = v.x;
   target[offset + 2] = v.y;
   target[offset + 3] = v.z;
+}
+
+function timestampDurationMs(data: BigUint64Array, range: TimestampRange | undefined): number | undefined {
+  if (!range) return undefined;
+  const begin = data[range[0]];
+  const end = data[range[1]];
+  const durationNs = end > begin ? end - begin : 0n;
+  return Number(durationNs) / 1_000_000;
 }
