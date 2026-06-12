@@ -82,8 +82,27 @@ const SVG_NS = 'http://www.w3.org/2000/svg';
 type Attrs = Record<string, string | number>;
 type Point = [number, number];
 
+function getRequiredElement<T extends Element>(
+  id: string,
+  expected: { new (): T },
+  expectedName: string,
+): T {
+  const element = document.getElementById(id);
+  if (element === null) throw new Error(`Missing DOM element: ${id}`);
+  if (!(element instanceof expected)) throw new Error(`DOM element ${id} must be ${expectedName}`);
+  return element;
+}
+
 function svgRoot(id: string): SVGSVGElement {
-  return document.getElementById(id) as unknown as SVGSVGElement;
+  return getRequiredElement(id, SVGSVGElement, 'SVGSVGElement');
+}
+
+function inputElement(id: string): HTMLInputElement {
+  return getRequiredElement(id, HTMLInputElement, 'HTMLInputElement');
+}
+
+function outputElement(id: string): HTMLOutputElement {
+  return getRequiredElement(id, HTMLOutputElement, 'HTMLOutputElement');
 }
 
 function svgEl(parent: Element, name: string, attrs: Attrs = {}): SVGElement {
@@ -155,7 +174,7 @@ function drawCanvasArrow(
 }
 
 function ctx2d(id: string): CanvasRenderingContext2D {
-  const c = document.getElementById(id) as HTMLCanvasElement;
+  const c = getRequiredElement(id, HTMLCanvasElement, 'HTMLCanvasElement');
   const logicalWidth = c.width;
   const logicalHeight = c.height;
   const dpr = Math.max(1, window.devicePixelRatio || 1);
@@ -249,16 +268,19 @@ function pointAt(path: ScreenPath, dist: number): Point {
   if (path.pts.length === 0) return [0, 0];
   if (dist <= 0) return path.pts[0];
   if (dist >= path.total) return path.pts[path.pts.length - 1];
-  for (let i = 1; i < path.lengths.length; i++) {
-    if (path.lengths[i] >= dist) {
-      const prevDist = path.lengths[i - 1];
-      const span = Math.max(path.lengths[i] - prevDist, 1e-6);
-      const t = (dist - prevDist) / span;
-      const a = path.pts[i - 1], b = path.pts[i];
-      return [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
-    }
+  let lo = 1;
+  let hi = path.lengths.length - 1;
+  while (lo < hi) {
+    const mid = Math.floor((lo + hi) / 2);
+    if (path.lengths[mid] >= dist) hi = mid;
+    else lo = mid + 1;
   }
-  return path.pts[path.pts.length - 1];
+  const i = lo;
+  const prevDist = path.lengths[i - 1];
+  const span = Math.max(path.lengths[i] - prevDist, 1e-6);
+  const t = (dist - prevDist) / span;
+  const a = path.pts[i - 1], b = path.pts[i];
+  return [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
 }
 
 function drawPathSegment(
@@ -809,8 +831,8 @@ function renderCaptureRulePanel(g: CanvasRenderingContext2D, elapsed: number): v
 }
 
 // slider wiring
-const slider = document.getElementById('bSlider') as HTMLInputElement;
-const readout = document.getElementById('bReadout') as HTMLOutputElement;
+const slider = inputElement('bSlider');
+const readout = outputElement('bReadout');
 slider.value = fanSelectedB.toFixed(3);
 
 function update() {
@@ -834,10 +856,10 @@ animateCanvasWhenVisible(
 // ============================================================
 {
   const svg = svgRoot('forceLawCompare');
-  const radiusSlider = document.getElementById('forceRadius') as HTMLInputElement;
-  const hSlider = document.getElementById('forceH') as HTMLInputElement;
-  const radiusReadout = document.getElementById('forceRadiusReadout') as HTMLOutputElement;
-  const hReadout = document.getElementById('forceHReadout') as HTMLOutputElement;
+  const radiusSlider = inputElement('forceRadius');
+  const hSlider = inputElement('forceH');
+  const radiusReadout = outputElement('forceRadiusReadout');
+  const hReadout = outputElement('forceHReadout');
   const W = 800;
   const H = 440;
   const plot = { x: 340, y: 74, w: 400, h: 278 };
@@ -934,12 +956,12 @@ animateCanvasWhenVisible(
 // ============================================================
 {
   const svg = svgRoot('metricExplorer');
-  const massSlider = document.getElementById('metricMass') as HTMLInputElement;
-  const radiusSlider = document.getElementById('metricRadius') as HTMLInputElement;
-  const angleSlider = document.getElementById('metricAngle') as HTMLInputElement;
-  const massReadout = document.getElementById('metricMassReadout') as HTMLOutputElement;
-  const radiusReadout = document.getElementById('metricRadiusReadout') as HTMLOutputElement;
-  const angleReadout = document.getElementById('metricAngleReadout') as HTMLOutputElement;
+  const massSlider = inputElement('metricMass');
+  const radiusSlider = inputElement('metricRadius');
+  const angleSlider = inputElement('metricAngle');
+  const massReadout = outputElement('metricMassReadout');
+  const radiusReadout = outputElement('metricRadiusReadout');
+  const angleReadout = outputElement('metricAngleReadout');
   const W = 800;
   const H = 500;
   const cx = 245;
@@ -1000,7 +1022,8 @@ animateCanvasWhenVisible(
     clearSvg(svg);
     const massSolar = 10 ** parseFloat(massSlider.value);
     const rsKm = rsPerSolarMassKm * massSolar;
-    const rho = parseFloat(radiusSlider.value);
+    const parsedRho = parseFloat(radiusSlider.value);
+    const rho = Number.isFinite(parsedRho) && parsedRho > 1 ? parsedRho : 1.001;
     const angleDeg = parseFloat(angleSlider.value);
     const angleRad = angleDeg * Math.PI / 180;
     const rKm = rho * rsKm;
@@ -1093,10 +1116,10 @@ animateCanvasWhenVisible(
 // ============================================================
 {
   const svg = svgRoot('omegaDisk');
-  const radiusSlider = document.getElementById('omegaRadius') as HTMLInputElement;
-  const timeSlider = document.getElementById('omegaTime') as HTMLInputElement;
-  const radiusReadout = document.getElementById('omegaRadiusReadout') as HTMLOutputElement;
-  const timeReadout = document.getElementById('omegaTimeReadout') as HTMLOutputElement;
+  const radiusSlider = inputElement('omegaRadius');
+  const timeSlider = inputElement('omegaTime');
+  const radiusReadout = outputElement('omegaRadiusReadout');
+  const timeReadout = outputElement('omegaTimeReadout');
   const W = 800;
   const H = 470;
   const cx = 240;

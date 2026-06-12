@@ -37,6 +37,8 @@ export const SINGULARITY_CUTOFF = 0.02;
 export const MAP_RADIUS = 16;
 export const DISK_INNER = ISCO;
 export const DISK_OUTER = 13;
+const MANUAL_CARRY_HORIZONTAL_SCALE = 0.992;
+const MANUAL_CARRY_VERTICAL_SCALE = 0.96;
 
 export interface PlayerState extends PhaseState {
   r: number;
@@ -120,10 +122,12 @@ export function stepPlayer(state: PlayerState, dTau: number): PlayerState {
     // coordinates do not cover) - and beyond it GR is non-deterministic
     // anyway. Carry the indestructible observer inward by hand, at rest in
     // the always-timelike Eulerian frame.
+    // The fallback is tuned to contract x/y gently for visual continuity while
+    // damping z faster so off-plane numerical drift settles back toward the disk.
     const p: Vec3 = {
-      x: state.position.x * 0.992,
-      y: state.position.y * 0.992,
-      z: state.position.z * 0.96,
+      x: state.position.x * MANUAL_CARRY_HORIZONTAL_SCALE,
+      y: state.position.y * MANUAL_CARRY_HORIZONTAL_SCALE,
+      z: state.position.z * MANUAL_CARRY_VERTICAL_SCALE,
     };
     const u = eulerianObserver(p, PARAMS);
     return makeState(

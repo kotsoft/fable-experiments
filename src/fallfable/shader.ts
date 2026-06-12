@@ -306,6 +306,29 @@ fn hotspot_boost(p: vec3<f32>, r: f32, t: f32) -> f32 {
   return boost;
 }
 
+fn disk_turbulence(
+  p: vec3<f32>,
+  angle: f32,
+  zOffset: f32,
+  inner: f32,
+  tangentStretch: f32,
+  spiralSign: f32,
+) -> f32 {
+  let ca = cos(angle);
+  let sa = sin(angle);
+  let q = vec3<f32>(p.x * ca - p.y * sa, p.x * sa + p.y * ca, p.z * 6.0 + zOffset);
+  let rr = max(length(q.xy), 1.0e-3);
+  let az = atan2(q.y, q.x);
+  let spiralAz = az + spiralSign * 0.42 * log(max(rr / inner, 0.18));
+  let arcRadius = rr / tangentStretch;
+  let noiseP = vec3<f32>(
+    rr * 1.35 + q.z * 0.06,
+    cos(spiralAz) * arcRadius,
+    sin(spiralAz) * arcRadius + q.z
+  );
+  return fbm(noiseP * (4.4 / inner));
+}
+
 fn disk_sample(pos: vec4<f32>, mom: vec4<f32>, dl: f32) -> DiskSample {
   let p = pos.yzw;
   let r = ks_radius(p);
@@ -351,11 +374,19 @@ fn disk_sample(pos: vec4<f32>, mom: vec4<f32>, dl: f32) -> DiskSample {
   let om = disk_omega(r);
   let a1 = -om * t1;
   let a2 = -om * t2;
-  let q1 = vec3<f32>(p.x * cos(a1) - p.y * sin(a1), p.x * sin(a1) + p.y * cos(a1), p.z * 6.0);
-  let q2 = vec3<f32>(p.x * cos(a2) - p.y * sin(a2), p.x * sin(a2) + p.y * cos(a2), p.z * 6.0 + 13.7);
-  let turb = mix(fbm(q2 * (4.4 / inner)), fbm(q1 * (4.4 / inner)), w1);
-  let sm = smoothstep(0.32, 0.78, turb);
-  let streaks = 0.12 + 1.45 * sm * sm;
+  // Artistic velocity shear without a blur trail: faster inner orbits stretch
+  // the texture into sharper tangent-aligned filaments, while outer gas keeps
+  // the softer unsheared turbulence.
+  let velocityShear = smoothstep(0.22, 4.6, abs(om) * period) * smoothstep(0.10, 0.95, x);
+  let tangentStretch = 1.0 + 4.4 * velocityShear;
+  let spinSign = sign(om);
+  let turb = mix(
+    disk_turbulence(p, a2, 13.7, inner, tangentStretch, spinSign),
+    disk_turbulence(p, a1, 0.0, inner, tangentStretch, spinSign),
+    w1
+  );
+  let sm = smoothstep(0.31, 0.77, turb);
+  let streaks = 0.12 + (1.38 + 0.22 * velocityShear) * sm * sm;
 
   // Novikov-Thorne-like profile: T = Tin (rin/r)^(3/4) (1 - sqrt(rin/r))^(1/4),
   // floored near the inner edge so the rim stays hot where the flow plunges.
