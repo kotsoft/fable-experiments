@@ -628,6 +628,18 @@ const BENCHMARK_POINTS: FallfableBenchmarkPoint[] = [
     }), -0.05),
   },
   {
+    id: 'adaptive-boundary',
+    label: 'adaptive boundary',
+    description: 'exterior view near the adaptive sky cutoff radius',
+    create: () => benchmarkSnapshot(launchLocal({
+      r: 4.1,
+      phi: Math.PI * 0.38,
+      betaRadial: -0.02,
+      betaTangential: 0.18,
+      height: 0.55,
+    }), -0.04),
+  },
+  {
     id: 'isco-lens',
     label: 'ISCO lens',
     description: 'marginally stable orbit with strong near-disk lensing',

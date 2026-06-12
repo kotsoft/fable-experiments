@@ -145,6 +145,7 @@ export class FallfableRenderer {
   private scale = 0.6;
   private autoScale = true;
   private lastScaleAdjust = 0;
+  private adaptiveSkyActive = false;
   private frameTimings: RendererFrameTiming[] = [];
   private timestampSlots: TimestampSlot[] = [];
   private nextTimestampSlot = 0;
@@ -284,6 +285,9 @@ export class FallfableRenderer {
 
     const diagnosticMode = Math.floor(this.options.sky.debugStatus ?? 0);
     const requestedSkyProbe = diagnosticMode === 8 || diagnosticMode === 9;
+    if (!requestedSkyProbe) {
+      this.adaptiveSkyActive = false;
+    }
     const useSkyProbe = requestedSkyProbe && this.shouldUseAdaptiveSky(frame);
     this.packUniforms(frame);
     if (requestedSkyProbe && !useSkyProbe) {
@@ -502,8 +506,11 @@ export class FallfableRenderer {
     const { spin, mass } = this.options;
     const horizon = mass + Math.sqrt(Math.max(mass * mass - spin * spin, 0));
     // The classifier pays off in broad exterior sky and shadow-dominant near-horizon views.
-    // Photon-shell views fall back to the normal trace path until there is a per-frame safe-tile budget.
-    return r >= 4.0 || r <= horizon * 1.08;
+    // Use a small radius hysteresis band so hovering near the exterior cutoff does not
+    // flip the classifier on/off every frame.
+    const exterior = this.adaptiveSkyActive ? r >= 3.75 : r >= 4.25;
+    this.adaptiveSkyActive = exterior || r <= horizon * 1.08;
+    return this.adaptiveSkyActive;
   }
 
   private ensureTargets(frame: SceneFrame): void {
