@@ -8,13 +8,14 @@ import {
   SINGULARITY_CUTOFF,
   constraintResidual,
   fourVelocity,
+  launchLocal,
   localSpeed,
   previewPath,
   stepPlayer,
   type PlayerState,
   type PreviewPoint,
 } from './player';
-import { FallfableRenderer } from './renderer';
+import { FallfableRenderer, type RendererFrameTiming } from './renderer';
 
 // ----------------------------------------------------------------- layout
 
@@ -94,6 +95,19 @@ qualitySelect.style.cssText =
 });
 controls.appendChild(row('resolution', qualitySelect));
 
+const freezeButton = controlButton('freeze');
+const huntButton = controlButton('hunt');
+const benchmarkButton = controlButton('bench');
+const benchmarkControls = document.createElement('div');
+benchmarkControls.style.cssText = 'display:flex;gap:6px;';
+benchmarkControls.append(freezeButton, huntButton, benchmarkButton);
+controls.appendChild(row('measure', benchmarkControls));
+
+const benchmarkOutput = document.createElement('div');
+benchmarkOutput.style.cssText = 'color:#7d8290;min-height:15px;';
+benchmarkOutput.textContent = 'bench idle';
+controls.appendChild(benchmarkOutput);
+
 const paceInput = document.createElement('input');
 paceInput.type = 'range';
 paceInput.min = '0.1';
@@ -133,6 +147,15 @@ function row(text: string, control: HTMLElement): HTMLElement {
   return label;
 }
 
+function controlButton(text: string): HTMLButtonElement {
+  const button = document.createElement('button');
+  button.textContent = text;
+  button.style.cssText =
+    'background:#171a22;color:#e6eaf4;border:1px solid #3b4150;border-radius:5px;' +
+    'padding:4px 7px;font:12px ui-monospace,monospace;cursor:pointer;';
+  return button;
+}
+
 // ------------------------------------------------------------------ state
 
 let state: PlayerState = PRESETS[0].create();
@@ -146,6 +169,22 @@ let lastFrameAt = performance.now();
 let fpsEma = 60;
 let renderer: FallfableRenderer | null = null;
 let rendererMessage = 'starting WebGPU…';
+let benchmarkRunning = false;
+let spikeHuntRunning = false;
+let latestBenchmarkResult: FallfableBenchmarkResult | null = null;
+let latestSpikeHuntResult: FallfableSpikeHuntResult | null = null;
+let latestBenchmarkSuiteResult: FallfableBenchmarkSuiteResult | null = null;
+
+function setRunning(next: boolean): void {
+  running = next;
+  updateFreezeButton();
+}
+
+function updateFreezeButton(): void {
+  freezeButton.textContent = running ? 'freeze' : 'resume';
+}
+
+updateFreezeButton();
 
 for (const preset of PRESETS) {
   const button = document.createElement('button');
@@ -164,7 +203,7 @@ function applyPreset(id: string): void {
   const preset = PRESETS.find((p) => p.id === id);
   if (!preset) return;
   state = preset.create();
-  running = true;
+  setRunning(true);
   faceInward();
   previewDirty = true;
 }
@@ -179,13 +218,13 @@ const planner = createPlanner(mapBox, {
   launchHeight: () => Number(heightInput.value),
   onPreview(next) {
     state = next;
-    running = false;
+    setRunning(false);
     faceInward();
     previewDirty = true;
   },
   onCommit(next) {
     state = next;
-    running = true;
+    setRunning(true);
     faceInward();
     previewDirty = true;
   },
@@ -220,6 +259,22 @@ canvas.addEventListener('pointercancel', stopLook);
 
 qualitySelect.addEventListener('change', () => {
   renderer?.setQuality(qualitySelect.value === 'auto' ? 'auto' : Number(qualitySelect.value));
+});
+
+freezeButton.addEventListener('click', () => {
+  setRunning(!running);
+});
+
+benchmarkButton.addEventListener('click', () => {
+  void runBenchmark().catch((error: unknown) => {
+    benchmarkOutput.textContent = `bench failed: ${errorMessage(error)}`;
+  });
+});
+
+huntButton.addEventListener('click', () => {
+  void huntFrameSpike().catch((error: unknown) => {
+    benchmarkOutput.textContent = `hunt failed: ${errorMessage(error)}`;
+  });
 });
 
 // ------------------------------------------------------------------ loop
@@ -338,34 +393,753 @@ function updateReadout(atSingularity: boolean): void {
     `<div>local speed: ${(localSpeed(state) * 100).toFixed(1)}% c</div>` +
     `<div>constraint |H+½|: ${constraintResidual(state).toExponential(1)}</div>` +
     (stats
-      ? `<div>render: ${stats.width}×${stats.height} · gpu ${stats.gpuMs.toFixed(1)} ms · ${fpsEma.toFixed(0)} fps</div>`
+      ? stats.gpuTimerAvailable
+        ? `<div>render: ${stats.width}×${stats.height} · gpu ${stats.gpuMs.toFixed(1)} ms · ${fpsEma.toFixed(0)} fps</div>`
+        : `<div>render: ${stats.width}×${stats.height} · gpu timer unavailable · ${fpsEma.toFixed(0)} fps</div>`
+      : '') +
+    (latestBenchmarkResult
+      ? `<div>bench: median ${latestBenchmarkResult.medianGpuMs.toFixed(1)} ms · p95 ${latestBenchmarkResult.p95GpuMs.toFixed(1)} ms · ${latestBenchmarkResult.gpuFramesPerSecond.toFixed(1)} gpu fps</div>`
+      : '') +
+    (latestSpikeHuntResult
+      ? `<div>hotspot: ${latestSpikeHuntResult.spikeGpuMs.toFixed(1)} ms spike · r ${latestSpikeHuntResult.radius.toFixed(2)}</div>`
       : '') +
     `<div style="color:#7d8290;margin-top:6px">${rendererMessage}</div>` +
     `<div style="color:#7d8290">drag view · map: press-drag-release to launch</div>`;
+}
+
+// ------------------------------------------------------------- benchmarking
+
+type QualityMode = 'auto' | number;
+
+interface FallfableViewSnapshot {
+  state: PlayerState;
+  running: boolean;
+  yaw: number;
+  pitch: number;
+  quality: QualityMode;
+}
+
+interface FallfableBenchmarkOptions {
+  warmupFrames?: number;
+  sampleFrames?: number;
+  quality?: number;
+  timeoutMs?: number;
+  restoreQuality?: boolean;
+  restoreRunning?: boolean;
+}
+
+interface FallfableBenchmarkResult {
+  warmupFrames: number;
+  sampleFrames: number;
+  quality: number;
+  width: number;
+  height: number;
+  scale: number;
+  radius: number;
+  coordinateTime: number;
+  meanGpuMs: number;
+  medianGpuMs: number;
+  p95GpuMs: number;
+  minGpuMs: number;
+  maxGpuMs: number;
+  totalGpuMs: number;
+  gpuFramesPerSecond: number;
+  sampleDurationMs: number;
+  completedFramesPerSecond: number;
+  samplesGpuMs: number[];
+}
+
+interface FallfableBenchmarkPointInfo {
+  id: string;
+  label: string;
+  description: string;
+}
+
+interface FallfableBenchmarkPoint extends FallfableBenchmarkPointInfo {
+  create(): FallfableViewSnapshot;
+}
+
+interface FallfableBenchmarkPointResult extends FallfableBenchmarkPointInfo {
+  benchmark: FallfableBenchmarkResult;
+}
+
+interface FallfableBenchmarkPointOptions extends FallfableBenchmarkOptions {
+  restoreView?: boolean;
+}
+
+interface FallfableBenchmarkSuiteOptions extends FallfableBenchmarkOptions {
+  points?: string[];
+  restoreView?: boolean;
+}
+
+interface FallfableBenchmarkSuiteResult {
+  points: FallfableBenchmarkPointResult[];
+}
+
+interface FallfableSpikeHuntOptions {
+  quality?: number;
+  /** Let the observer move this long before spike detection starts. */
+  minDelayMs?: number;
+  timeoutMs?: number;
+  baselineFrames?: number;
+  thresholdMultiplier?: number;
+  /** Absolute spike threshold; overrides the baseline multiplier when set. */
+  minSpikeGpuMs?: number;
+  consecutiveFrames?: number;
+  benchmark?: boolean;
+  benchmarkWarmupFrames?: number;
+  benchmarkSampleFrames?: number;
+  restoreQuality?: boolean;
+}
+
+interface FallfableSpikeHuntResult {
+  snapshot: FallfableViewSnapshot;
+  benchmark: FallfableBenchmarkResult | null;
+  quality: number;
+  baselineGpuMs: number;
+  thresholdGpuMs: number;
+  spikeGpuMs: number;
+  observedFrames: number;
+  elapsedMs: number;
+  radius: number;
+  coordinateTime: number;
+}
+
+function currentQuality(): QualityMode {
+  return qualitySelect.value === 'auto' ? 'auto' : Number(qualitySelect.value);
+}
+
+function setQuality(mode: QualityMode): void {
+  renderer?.setQuality(mode);
+  const value = mode === 'auto' ? 'auto' : String(mode);
+  if (Array.from(qualitySelect.options).some((option) => option.value === value)) {
+    qualitySelect.value = value;
+  }
+}
+
+function clonePlayerState(source: PlayerState): PlayerState {
+  return {
+    ...source,
+    position: { ...source.position },
+    momentum: { ...source.momentum },
+  };
+}
+
+function captureView(): FallfableViewSnapshot {
+  return {
+    state: clonePlayerState(state),
+    running,
+    yaw,
+    pitch,
+    quality: currentQuality(),
+  };
+}
+
+function restoreView(snapshot: FallfableViewSnapshot): void {
+  state = clonePlayerState(snapshot.state);
+  yaw = snapshot.yaw;
+  pitch = snapshot.pitch;
+  setRunning(snapshot.running);
+  setQuality(snapshot.quality);
+  previewDirty = true;
+}
+
+const BENCHMARK_POINTS: FallfableBenchmarkPoint[] = [
+  {
+    id: 'outer-disk',
+    label: 'outer disk',
+    description: 'wide disk and sky view from above the outer disk',
+    create: () => benchmarkSnapshot(launchLocal({
+      r: 10,
+      phi: Math.PI * 0.25,
+      betaRadial: 0,
+      betaTangential: 0.05,
+      height: 1.6,
+    })),
+  },
+  {
+    id: 'disk-graze',
+    label: 'disk graze',
+    description: 'low-angle view through the bright disk atmosphere',
+    create: () => benchmarkSnapshot(launchLocal({
+      r: 7,
+      phi: Math.PI / 2,
+      betaRadial: -0.05,
+      betaTangential: 0.27,
+      height: 0.25,
+    }), -0.05),
+  },
+  {
+    id: 'isco-lens',
+    label: 'ISCO lens',
+    description: 'marginally stable orbit with strong near-disk lensing',
+    create: () => benchmarkSnapshot(presetState('isco')),
+  },
+  {
+    id: 'photon-whirl',
+    label: 'photon whirl',
+    description: 'near photon-orbit view where many rays skim before escaping',
+    create: () => benchmarkSnapshot(presetState('whirl')),
+  },
+  {
+    id: 'horizon-graze',
+    label: 'horizon graze',
+    description: 'just outside the outer horizon, aimed across the disk',
+    create: () => benchmarkSnapshot(launchLocal({
+      r: HORIZON * 1.04,
+      phi: -0.35,
+      betaRadial: -0.18,
+      betaTangential: 0.35,
+      height: 0.08,
+    }), -0.08),
+  },
+  {
+    id: 'inner-horizon',
+    label: 'inner horizon',
+    description: 'inside the black hole near the Cauchy horizon stress region',
+    create: () => benchmarkSnapshot(launchLocal({
+      r: Math.max(INNER_HORIZON * 1.12, 0.28),
+      phi: 2.1,
+      betaRadial: -0.04,
+      betaTangential: 0.12,
+      height: 0.02,
+    }), 0.04),
+  },
+  {
+    id: 'polar-halo',
+    label: 'polar halo',
+    description: 'high-axis view where the disk forms a lensed halo',
+    create: () => benchmarkSnapshot(presetState('polar')),
+  },
+];
+
+function benchmarkSnapshot(pointState: PlayerState, pitchBias = 0): FallfableViewSnapshot {
+  const view = inwardView(pointState);
+  return {
+    state: clonePlayerState(pointState),
+    running: false,
+    yaw: view.yaw,
+    pitch: Math.max(-1.35, Math.min(1.35, view.pitch + pitchBias)),
+    quality: currentQuality(),
+  };
+}
+
+function inwardView(source: PlayerState): { yaw: number; pitch: number } {
+  const rho = Math.hypot(source.position.x, source.position.y);
+  return {
+    yaw: Math.atan2(-source.position.y, -source.position.x),
+    pitch: -Math.atan2(source.position.z, Math.max(rho, 0.3)) * 0.8,
+  };
+}
+
+function presetState(id: string): PlayerState {
+  const preset = PRESETS.find((entry) => entry.id === id);
+  if (!preset) throw new Error(`Missing benchmark preset: ${id}`);
+  return preset.create();
+}
+
+function listBenchmarkPoints(): FallfableBenchmarkPointInfo[] {
+  return BENCHMARK_POINTS.map(({ id, label, description }) => ({ id, label, description }));
+}
+
+function benchmarkPointById(id: string): FallfableBenchmarkPoint {
+  const point = BENCHMARK_POINTS.find((entry) => entry.id === id);
+  if (!point) {
+    const choices = BENCHMARK_POINTS.map((entry) => entry.id).join(', ');
+    throw new Error(`Unknown benchmark point "${id}". Choose one of: ${choices}`);
+  }
+  return point;
+}
+
+async function runBenchmarkPoint(
+  id: string,
+  options: FallfableBenchmarkPointOptions = {},
+): Promise<FallfableBenchmarkPointResult> {
+  const point = benchmarkPointById(id);
+  const previous = captureView();
+  const { restoreView: shouldRestoreView = true, ...benchmarkOptions } = options;
+
+  try {
+    restoreView(point.create());
+    const benchmark = await runBenchmark(benchmarkOptions);
+    return {
+      id: point.id,
+      label: point.label,
+      description: point.description,
+      benchmark,
+    };
+  } finally {
+    if (shouldRestoreView) restoreView(previous);
+  }
+}
+
+async function runBenchmarkSuite(
+  options: FallfableBenchmarkSuiteOptions = {},
+): Promise<FallfableBenchmarkSuiteResult> {
+  const previous = captureView();
+  const { points, restoreView: shouldRestoreView = true, ...benchmarkOptions } = options;
+  const ids = points?.length ? points : BENCHMARK_POINTS.map((point) => point.id);
+  const results: FallfableBenchmarkPointResult[] = [];
+
+  try {
+    for (const id of ids) {
+      results.push(await runBenchmarkPoint(id, { ...benchmarkOptions, restoreView: false }));
+    }
+    latestBenchmarkSuiteResult = { points: results };
+    return latestBenchmarkSuiteResult;
+  } finally {
+    if (shouldRestoreView) restoreView(previous);
+  }
+}
+
+async function runBenchmark(
+  options: FallfableBenchmarkOptions = {},
+  source: 'user' | 'spike-hunt' = 'user',
+): Promise<FallfableBenchmarkResult> {
+  const activeRenderer = renderer;
+  if (!activeRenderer) throw new Error('Renderer is not ready');
+  if (!activeRenderer.stats.gpuTimerAvailable) throw new Error('WebGPU timestamp-query is unavailable');
+  if (benchmarkRunning) throw new Error('Benchmark already running');
+  if (spikeHuntRunning && source !== 'spike-hunt') throw new Error('Spike hunt already running');
+
+  benchmarkRunning = true;
+  benchmarkButton.disabled = true;
+  huntButton.disabled = true;
+  benchmarkButton.style.cursor = 'wait';
+  const previous = captureView();
+  const warmupFrames = Math.max(0, Math.floor(options.warmupFrames ?? 30));
+  const sampleFrames = Math.max(1, Math.floor(options.sampleFrames ?? 120));
+  const fallbackQuality = previous.quality === 'auto' ? 0.75 : previous.quality;
+  const quality = Math.max(0.2, Math.min(1, options.quality ?? fallbackQuality));
+
+  try {
+    setRunning(false);
+    setQuality(quality);
+    benchmarkOutput.textContent = `bench warming 0/${warmupFrames} @ ${quality}`;
+    activeRenderer.resetFrameTimings();
+    if (warmupFrames > 0) {
+      await collectRendererTimings(activeRenderer, warmupFrames, (count) => {
+        benchmarkOutput.textContent = `bench warming ${count}/${warmupFrames} @ ${quality}`;
+      }, options.timeoutMs);
+    }
+
+    benchmarkOutput.textContent = `bench sampling 0/${sampleFrames} @ ${quality}`;
+    activeRenderer.resetFrameTimings();
+    const timings = await collectRendererTimings(activeRenderer, sampleFrames, (count) => {
+      benchmarkOutput.textContent = `bench sampling ${count}/${sampleFrames} @ ${quality}`;
+    }, options.timeoutMs);
+    const result = summarizeTimings(timings, warmupFrames, sampleFrames, quality);
+    latestBenchmarkResult = result;
+    benchmarkOutput.textContent =
+      `bench ${quality}: median ${result.medianGpuMs.toFixed(1)} ms, p95 ${result.p95GpuMs.toFixed(1)} ms, ${result.gpuFramesPerSecond.toFixed(1)} fps`;
+    return result;
+  } finally {
+    if (options.restoreQuality ?? true) setQuality(previous.quality);
+    if (options.restoreRunning ?? true) setRunning(previous.running);
+    benchmarkRunning = false;
+    benchmarkButton.disabled = false;
+    huntButton.disabled = false;
+    benchmarkButton.style.cursor = 'pointer';
+  }
+}
+
+async function collectRendererTimings(
+  activeRenderer: FallfableRenderer,
+  count: number,
+  onProgress?: (count: number) => void,
+  timeoutMs = 60000,
+): Promise<RendererFrameTiming[]> {
+  const timings: RendererFrameTiming[] = [];
+  const startedAt = performance.now();
+  while (timings.length < count) {
+    if (performance.now() - startedAt > timeoutMs) {
+      throw new Error(`Timed out after ${timeoutMs} ms waiting for ${count} rendered frames`);
+    }
+    await animationFrame();
+    const before = timings.length;
+    timings.push(...activeRenderer.consumeFrameTimings());
+    if (timings.length !== before) onProgress?.(Math.min(timings.length, count));
+  }
+  return timings.slice(0, count);
+}
+
+function animationFrame(): Promise<void> {
+  return new Promise((resolve) => requestAnimationFrame(() => resolve()));
+}
+
+function summarizeTimings(
+  timings: RendererFrameTiming[],
+  warmupFrames: number,
+  sampleFrames: number,
+  quality: number,
+): FallfableBenchmarkResult {
+  const samples = timings.map((timing) => timing.gpuMs);
+  const sorted = [...samples].sort((a, b) => a - b);
+  const sum = samples.reduce((total, value) => total + value, 0);
+  const first = timings[0];
+  const last = timings[timings.length - 1];
+  const sampleDurationMs = first && last ? Math.max(last.completedAt - first.completedAt, 1) : 0;
+  return {
+    warmupFrames,
+    sampleFrames,
+    quality,
+    width: last?.width ?? 0,
+    height: last?.height ?? 0,
+    scale: last?.scale ?? quality,
+    radius: state.r,
+    coordinateTime: state.position.t,
+    meanGpuMs: sum / Math.max(samples.length, 1),
+    medianGpuMs: percentile(sorted, 0.5),
+    p95GpuMs: percentile(sorted, 0.95),
+    minGpuMs: sorted[0] ?? 0,
+    maxGpuMs: sorted[sorted.length - 1] ?? 0,
+    totalGpuMs: sum,
+    gpuFramesPerSecond: sum > 0 ? (samples.length * 1000) / sum : 0,
+    sampleDurationMs,
+    completedFramesPerSecond: sampleDurationMs > 0 ? (samples.length * 1000) / sampleDurationMs : 0,
+    samplesGpuMs: samples,
+  };
+}
+
+async function huntFrameSpike(options: FallfableSpikeHuntOptions = {}): Promise<FallfableSpikeHuntResult> {
+  const activeRenderer = renderer;
+  if (!activeRenderer) throw new Error('Renderer is not ready');
+  if (!activeRenderer.stats.gpuTimerAvailable) throw new Error('WebGPU timestamp-query is unavailable');
+  if (benchmarkRunning) throw new Error('Benchmark already running');
+  if (spikeHuntRunning) throw new Error('Spike hunt already running');
+
+  spikeHuntRunning = true;
+  huntButton.disabled = true;
+  benchmarkButton.disabled = true;
+  huntButton.style.cursor = 'wait';
+
+  const previous = captureView();
+  const fallbackQuality = previous.quality === 'auto' ? 0.75 : previous.quality;
+  const quality = Math.max(0.2, Math.min(1, options.quality ?? fallbackQuality));
+  const minDelayMs = Math.max(0, options.minDelayMs ?? 2000);
+  const timeoutMs = Math.max(minDelayMs + 1000, options.timeoutMs ?? 18000);
+  const baselineFrames = Math.max(1, Math.floor(options.baselineFrames ?? 24));
+  const thresholdMultiplier = Math.max(1, options.thresholdMultiplier ?? 1.45);
+  const consecutiveFrames = Math.max(1, Math.floor(options.consecutiveFrames ?? 1));
+  const baselineSamples: number[] = [];
+  let consecutiveSpikes = 0;
+  let observedFrames = 0;
+  let baselineGpuMs = 0;
+  let thresholdGpuMs = options.minSpikeGpuMs ?? 0;
+
+  try {
+    setQuality(quality);
+    setRunning(true);
+    activeRenderer.resetFrameTimings();
+    const startedAt = performance.now();
+    benchmarkOutput.textContent = `hunt waiting ${Math.round(minDelayMs)} ms @ ${quality}`;
+
+    while (performance.now() - startedAt <= timeoutMs) {
+      await animationFrame();
+      const elapsedMs = performance.now() - startedAt;
+      const timings = activeRenderer.consumeFrameTimings();
+      if (elapsedMs < minDelayMs) {
+        if (timings.length > 0) benchmarkOutput.textContent = `hunt waiting ${Math.round(minDelayMs - elapsedMs)} ms @ ${quality}`;
+        continue;
+      }
+
+      for (const timing of timings) {
+        observedFrames++;
+        if (baselineSamples.length < baselineFrames && options.minSpikeGpuMs === undefined) {
+          baselineSamples.push(timing.gpuMs);
+          baselineGpuMs = percentile([...baselineSamples].sort((a, b) => a - b), 0.5);
+          thresholdGpuMs = baselineGpuMs * thresholdMultiplier;
+          benchmarkOutput.textContent = `hunt baseline ${baselineSamples.length}/${baselineFrames} @ ${quality}`;
+          continue;
+        }
+
+        if (options.minSpikeGpuMs !== undefined) {
+          thresholdGpuMs = options.minSpikeGpuMs;
+          baselineGpuMs = baselineGpuMs || activeRenderer.stats.gpuMs;
+        }
+
+        const isSpike = timing.gpuMs >= thresholdGpuMs;
+        consecutiveSpikes = isSpike ? consecutiveSpikes + 1 : 0;
+        benchmarkOutput.textContent =
+          `hunt gpu ${timing.gpuMs.toFixed(1)} / ${thresholdGpuMs.toFixed(1)} ms @ r ${state.r.toFixed(2)}`;
+
+        if (consecutiveSpikes >= consecutiveFrames) {
+          setRunning(false);
+          const snapshot = captureView();
+          let benchmark: FallfableBenchmarkResult | null = null;
+          if (options.benchmark ?? true) {
+            benchmark = await runBenchmark({
+              warmupFrames: options.benchmarkWarmupFrames ?? 20,
+              sampleFrames: options.benchmarkSampleFrames ?? 100,
+              quality,
+              restoreQuality: false,
+              restoreRunning: false,
+            }, 'spike-hunt');
+          }
+
+          const result: FallfableSpikeHuntResult = {
+            snapshot,
+            benchmark,
+            quality,
+            baselineGpuMs,
+            thresholdGpuMs,
+            spikeGpuMs: timing.gpuMs,
+            observedFrames,
+            elapsedMs: timing.completedAt - startedAt,
+            radius: state.r,
+            coordinateTime: state.position.t,
+          };
+          latestSpikeHuntResult = result;
+          benchmarkOutput.textContent = benchmark
+            ? `hunt r ${result.radius.toFixed(2)}: median ${benchmark.medianGpuMs.toFixed(1)} ms`
+            : `hunt froze r ${result.radius.toFixed(2)} on ${result.spikeGpuMs.toFixed(1)} ms`;
+          return result;
+        }
+      }
+    }
+
+    restoreView(previous);
+    throw new Error(`No spike found after ${Math.round(timeoutMs)} ms`);
+  } finally {
+    if (options.restoreQuality ?? true) setQuality(previous.quality);
+    spikeHuntRunning = false;
+    huntButton.disabled = false;
+    benchmarkButton.disabled = false;
+    huntButton.style.cursor = 'pointer';
+  }
+}
+
+function percentile(sorted: number[], fraction: number): number {
+  if (sorted.length === 0) return 0;
+  const index = (sorted.length - 1) * fraction;
+  const lo = Math.floor(index);
+  const hi = Math.ceil(index);
+  const t = index - lo;
+  return sorted[lo] * (1 - t) + sorted[hi] * t;
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 // ------------------------------------------------------------------ debug
 
 interface FallfableDebugApi {
   getState(): PlayerState;
+  snapshot(): FallfableViewSnapshot;
+  restore(snapshot: FallfableViewSnapshot): void;
   fastForward(tau: number): PlayerState;
+  freeze(): void;
+  resume(): void;
   pause(): void;
   preset(id: string): void;
+  setQuality(mode: QualityMode): void;
+  benchmark(options?: FallfableBenchmarkOptions): Promise<FallfableBenchmarkResult>;
+  latestBenchmark(): FallfableBenchmarkResult | null;
+  benchmarkPoints(): FallfableBenchmarkPointInfo[];
+  benchmarkPoint(id: string, options?: FallfableBenchmarkPointOptions): Promise<FallfableBenchmarkPointResult>;
+  benchmarkSuite(options?: FallfableBenchmarkSuiteOptions): Promise<FallfableBenchmarkSuiteResult>;
+  latestBenchmarkSuite(): FallfableBenchmarkSuiteResult | null;
+  huntSpike(options?: FallfableSpikeHuntOptions): Promise<FallfableSpikeHuntResult>;
+  latestSpikeHunt(): FallfableSpikeHuntResult | null;
   renderer(): FallfableRenderer | null;
 }
 
-(window as Window & { __fallfable?: FallfableDebugApi }).__fallfable = {
+declare global {
+  interface Window {
+    __fallfable?: FallfableDebugApi;
+  }
+}
+
+const fallfableDebugApi: FallfableDebugApi = {
   getState: () => state,
+  snapshot: captureView,
+  restore: restoreView,
   fastForward(tau: number) {
     state = stepPlayer(state, tau);
     previewDirty = true;
     return state;
   },
+  freeze() {
+    setRunning(false);
+  },
+  resume() {
+    setRunning(true);
+  },
   pause() {
-    running = false;
+    setRunning(false);
   },
   preset(id: string) {
     applyPreset(id);
   },
+  setQuality,
+  benchmark: runBenchmark,
+  latestBenchmark: () => latestBenchmarkResult,
+  benchmarkPoints: listBenchmarkPoints,
+  benchmarkPoint: runBenchmarkPoint,
+  benchmarkSuite: runBenchmarkSuite,
+  latestBenchmarkSuite: () => latestBenchmarkSuiteResult,
+  huntSpike: huntFrameSpike,
+  latestSpikeHunt: () => latestSpikeHuntResult,
   renderer: () => renderer,
 };
+
+window.__fallfable = fallfableDebugApi;
+
+if (import.meta.env.DEV) {
+  installFallfableDevBridge(fallfableDebugApi);
+}
+
+interface FallfableDevBridgePayload {
+  status: 'ready' | 'running' | 'complete' | 'error';
+  command: string;
+  nonce: string | null;
+  updatedAt: number;
+  result?: unknown;
+  error?: string;
+}
+
+function installFallfableDevBridge(api: FallfableDebugApi): void {
+  const output = document.createElement('script');
+  output.id = 'fallfable-dev-result';
+  output.type = 'application/json';
+  document.head.appendChild(output);
+
+  let lastCommand = '';
+  const writePayload = (payload: FallfableDevBridgePayload) => {
+    output.textContent = JSON.stringify(payload);
+    document.documentElement.dataset.fallfableDevStatus = payload.status;
+    document.documentElement.dataset.fallfableDevCommand = payload.command;
+  };
+
+  const runHashCommand = () => {
+    const raw = location.hash.startsWith('#') ? location.hash.slice(1) : location.hash;
+    const params = new URLSearchParams(raw);
+    const command = params.get('fallfable');
+    if (!command || raw === lastCommand) return;
+    lastCommand = raw;
+    void runDevCommand(api, command, params, writePayload);
+  };
+
+  window.addEventListener('hashchange', runHashCommand);
+  writePayload({ status: 'ready', command: 'none', nonce: null, updatedAt: performance.now() });
+  queueMicrotask(runHashCommand);
+}
+
+async function runDevCommand(
+  api: FallfableDebugApi,
+  command: string,
+  params: URLSearchParams,
+  writePayload: (payload: FallfableDevBridgePayload) => void,
+): Promise<void> {
+  const nonce = params.get('nonce');
+  writePayload({ status: 'running', command, nonce, updatedAt: performance.now() });
+
+  try {
+    let result: unknown;
+    switch (command) {
+      case 'bench':
+        await waitForRenderer();
+        result = await api.benchmark(benchmarkOptionsFromParams(params));
+        break;
+      case 'benchPoint':
+        await waitForRenderer();
+        result = await api.benchmarkPoint(params.get('point') ?? BENCHMARK_POINTS[0].id, benchmarkPointOptionsFromParams(params));
+        break;
+      case 'benchSuite':
+        await waitForRenderer();
+        result = await api.benchmarkSuite(benchmarkSuiteOptionsFromParams(params));
+        break;
+      case 'hunt':
+        await waitForRenderer();
+        result = await api.huntSpike(spikeHuntOptionsFromParams(params));
+        break;
+      case 'freeze':
+        api.freeze();
+        result = api.snapshot();
+        break;
+      case 'resume':
+        api.resume();
+        result = api.snapshot();
+        break;
+      default:
+        throw new Error(`Unknown fallfable dev command: ${command}`);
+    }
+    writePayload({ status: 'complete', command, nonce, updatedAt: performance.now(), result });
+  } catch (error) {
+    writePayload({ status: 'error', command, nonce, updatedAt: performance.now(), error: errorMessage(error) });
+  }
+}
+
+async function waitForRenderer(timeoutMs = 10000): Promise<void> {
+  const startedAt = performance.now();
+  while (!renderer && rendererMessage === 'starting WebGPU…') {
+    if (performance.now() - startedAt > timeoutMs) throw new Error('Timed out waiting for renderer');
+    await animationFrame();
+  }
+  if (!renderer) throw new Error(rendererMessage);
+}
+
+function benchmarkOptionsFromParams(params: URLSearchParams): FallfableBenchmarkOptions {
+  return {
+    warmupFrames: numberParam(params, 'warmup') ?? numberParam(params, 'warmupFrames'),
+    sampleFrames: numberParam(params, 'samples') ?? numberParam(params, 'sampleFrames'),
+    quality: numberParam(params, 'quality'),
+    timeoutMs: numberParam(params, 'timeout') ?? numberParam(params, 'timeoutMs'),
+    restoreQuality: booleanParam(params, 'restoreQuality'),
+    restoreRunning: booleanParam(params, 'restoreRunning'),
+  };
+}
+
+function benchmarkPointOptionsFromParams(params: URLSearchParams): FallfableBenchmarkPointOptions {
+  return {
+    ...benchmarkOptionsFromParams(params),
+    restoreView: booleanParam(params, 'restoreView'),
+  };
+}
+
+function benchmarkSuiteOptionsFromParams(params: URLSearchParams): FallfableBenchmarkSuiteOptions {
+  return {
+    ...benchmarkOptionsFromParams(params),
+    points: stringListParam(params, 'points'),
+    restoreView: booleanParam(params, 'restoreView'),
+  };
+}
+
+function spikeHuntOptionsFromParams(params: URLSearchParams): FallfableSpikeHuntOptions {
+  return {
+    quality: numberParam(params, 'quality'),
+    minDelayMs: numberParam(params, 'minDelay') ?? numberParam(params, 'minDelayMs'),
+    timeoutMs: numberParam(params, 'timeout') ?? numberParam(params, 'timeoutMs'),
+    baselineFrames: numberParam(params, 'baseline') ?? numberParam(params, 'baselineFrames'),
+    thresholdMultiplier: numberParam(params, 'threshold') ?? numberParam(params, 'thresholdMultiplier'),
+    minSpikeGpuMs: numberParam(params, 'minSpike') ?? numberParam(params, 'minSpikeGpuMs'),
+    consecutiveFrames: numberParam(params, 'consecutive') ?? numberParam(params, 'consecutiveFrames'),
+    benchmark: booleanParam(params, 'benchmark'),
+    benchmarkWarmupFrames: numberParam(params, 'benchmarkWarmup') ?? numberParam(params, 'benchmarkWarmupFrames'),
+    benchmarkSampleFrames: numberParam(params, 'benchmarkSamples') ?? numberParam(params, 'benchmarkSampleFrames'),
+    restoreQuality: booleanParam(params, 'restoreQuality'),
+  };
+}
+
+function stringListParam(params: URLSearchParams, name: string): string[] | undefined {
+  const raw = params.get(name);
+  if (raw === null || raw.trim() === '') return undefined;
+  const values = raw.split(',').map((value) => value.trim()).filter(Boolean);
+  return values.length > 0 ? values : undefined;
+}
+
+function numberParam(params: URLSearchParams, name: string): number | undefined {
+  const raw = params.get(name);
+  if (raw === null || raw.trim() === '') return undefined;
+  const value = Number(raw);
+  return Number.isFinite(value) ? value : undefined;
+}
+
+function booleanParam(params: URLSearchParams, name: string): boolean | undefined {
+  const raw = params.get(name);
+  if (raw === null) return undefined;
+  if (raw === '1' || raw === 'true') return true;
+  if (raw === '0' || raw === 'false') return false;
+  return undefined;
+}

@@ -52,18 +52,40 @@ export interface RendererStats {
   width: number;
   height: number;
   scale: number;
+  gpuTimerAvailable: boolean;
+}
+
+export interface RendererFrameTiming extends RendererStats {
+  completedAt: number;
 }
 
 const UNIFORM_FLOATS = 44;
 const MAX_IN_FLIGHT = 2;
 const MAX_DISPLAY_WIDTH = 1920;
+const TIMING_SLOT_COUNT = 4;
+const TIMESTAMP_QUERY_COUNT = 2;
+const TIMESTAMP_RESULT_BYTES = TIMESTAMP_QUERY_COUNT * 8;
 
 // The flag namespaces are runtime globals the TS lib in this project does not
 // declare; fall back to the spec-fixed bit values when they are absent.
 type GpuFlags = Record<string, number>;
-const gpuGlobals = globalThis as unknown as { GPUBufferUsage?: GpuFlags; GPUTextureUsage?: GpuFlags };
-const BUFFER_USAGE: GpuFlags = gpuGlobals.GPUBufferUsage ?? { UNIFORM: 0x40, COPY_DST: 0x08 };
+const gpuGlobals = globalThis as unknown as { GPUBufferUsage?: GpuFlags; GPUMapMode?: GpuFlags; GPUTextureUsage?: GpuFlags };
+const BUFFER_USAGE: GpuFlags = gpuGlobals.GPUBufferUsage ?? {
+  MAP_READ: 0x01,
+  COPY_SRC: 0x04,
+  COPY_DST: 0x08,
+  UNIFORM: 0x40,
+  QUERY_RESOLVE: 0x200,
+};
+const MAP_MODE: GpuFlags = gpuGlobals.GPUMapMode ?? { READ: 0x01 };
 const TEXTURE_USAGE: GpuFlags = gpuGlobals.GPUTextureUsage ?? { TEXTURE_BINDING: 0x04, STORAGE_BINDING: 0x08 };
+
+interface TimestampSlot {
+  querySet: GPUQuerySet;
+  resolveBuffer: GPUBuffer;
+  readbackBuffer: GPUBuffer;
+  busy: boolean;
+}
 
 export class FallfableRenderer {
   private device: GPUDevice;
@@ -83,10 +105,13 @@ export class FallfableRenderer {
   private displayAspect = 16 / 9;
 
   private inFlight = 0;
-  private gpuMsEma = 16;
+  private gpuMsEma = Number.NaN;
   private scale = 0.6;
   private autoScale = true;
   private lastScaleAdjust = 0;
+  private frameTimings: RendererFrameTiming[] = [];
+  private timestampSlots: TimestampSlot[] = [];
+  private nextTimestampSlot = 0;
 
   options: RendererOptions;
 
@@ -117,12 +142,28 @@ export class FallfableRenderer {
       usage: BUFFER_USAGE.UNIFORM | BUFFER_USAGE.COPY_DST,
     });
     this.sampler = device.createSampler({ magFilter: 'linear', minFilter: 'linear' });
+    if (device.features.has('timestamp-query')) {
+      this.timestampSlots = Array.from({ length: TIMING_SLOT_COUNT }, () => ({
+        querySet: device.createQuerySet({ type: 'timestamp', count: TIMESTAMP_QUERY_COUNT }),
+        resolveBuffer: device.createBuffer({
+          size: TIMESTAMP_RESULT_BYTES,
+          usage: BUFFER_USAGE.QUERY_RESOLVE | BUFFER_USAGE.COPY_SRC,
+        }),
+        readbackBuffer: device.createBuffer({
+          size: TIMESTAMP_RESULT_BYTES,
+          usage: BUFFER_USAGE.COPY_DST | BUFFER_USAGE.MAP_READ,
+        }),
+        busy: false,
+      }));
+    }
   }
 
   static async create(canvas: HTMLCanvasElement, options: RendererOptions): Promise<FallfableRenderer | null> {
     if (!navigator.gpu) return null;
     const adapter = await navigator.gpu.requestAdapter();
-    const device = await adapter?.requestDevice();
+    if (!adapter) return null;
+    const requiredFeatures: GPUFeatureName[] = adapter.features.has('timestamp-query') ? ['timestamp-query'] : [];
+    const device = await adapter.requestDevice({ requiredFeatures });
     if (!device) return null;
     const context = canvas.getContext('webgpu') as GPUCanvasContext | null;
     if (!context) return null;
@@ -132,7 +173,13 @@ export class FallfableRenderer {
   }
 
   get stats(): RendererStats {
-    return { gpuMs: this.gpuMsEma, width: this.traceWidth, height: this.traceHeight, scale: this.scale };
+    return {
+      gpuMs: Number.isFinite(this.gpuMsEma) ? this.gpuMsEma : 0,
+      width: this.traceWidth,
+      height: this.traceHeight,
+      scale: this.scale,
+      gpuTimerAvailable: this.timestampSlots.length > 0,
+    };
   }
 
   /** 'auto' adapts resolution to GPU frame time; a number pins the scale. */
@@ -145,6 +192,16 @@ export class FallfableRenderer {
     }
   }
 
+  resetFrameTimings(): void {
+    this.frameTimings = [];
+  }
+
+  consumeFrameTimings(): RendererFrameTiming[] {
+    const timings = this.frameTimings;
+    this.frameTimings = [];
+    return timings;
+  }
+
   /** Returns false when the frame was skipped because the GPU is behind. */
   render(frame: SceneFrame): boolean {
     if (this.inFlight >= MAX_IN_FLIGHT) return false;
@@ -154,9 +211,17 @@ export class FallfableRenderer {
 
     this.packUniforms(frame);
     this.device.queue.writeBuffer(this.uniformBuffer, 0, this.uniforms);
+    const timingSlot = this.takeTimestampSlot();
 
     const encoder = this.device.createCommandEncoder();
-    const compute = encoder.beginComputePass();
+    const compute = encoder.beginComputePass(timingSlot
+      ? {
+          timestampWrites: {
+            querySet: timingSlot.querySet,
+            beginningOfPassWriteIndex: 0,
+          },
+        }
+      : undefined);
     compute.setPipeline(this.tracePipeline);
     compute.setBindGroup(0, this.traceBindGroup);
     compute.dispatchWorkgroups(Math.ceil(this.traceWidth / 8), Math.ceil(this.traceHeight / 8));
@@ -171,25 +236,83 @@ export class FallfableRenderer {
           storeOp: 'store',
         },
       ],
+      timestampWrites: timingSlot
+        ? {
+            querySet: timingSlot.querySet,
+            endOfPassWriteIndex: 1,
+          }
+        : undefined,
     });
     pass.setPipeline(this.presentPipeline);
     pass.setBindGroup(0, this.presentBindGroup);
     pass.draw(3);
     pass.end();
+    if (timingSlot) {
+      encoder.resolveQuerySet(timingSlot.querySet, 0, TIMESTAMP_QUERY_COUNT, timingSlot.resolveBuffer, 0);
+      encoder.copyBufferToBuffer(timingSlot.resolveBuffer, 0, timingSlot.readbackBuffer, 0, TIMESTAMP_RESULT_BYTES);
+    }
 
-    const submitted = performance.now();
+    const submittedWidth = this.traceWidth;
+    const submittedHeight = this.traceHeight;
+    const submittedScale = this.scale;
     this.device.queue.submit([encoder.finish()]);
     this.inFlight += 1;
-    void this.device.queue.onSubmittedWorkDone().then(() => {
-      this.inFlight -= 1;
-      const ms = performance.now() - submitted;
-      this.gpuMsEma += (ms - this.gpuMsEma) * 0.12;
+    void this.device.queue.onSubmittedWorkDone().finally(() => {
+      this.inFlight = Math.max(0, this.inFlight - 1);
     });
+    if (timingSlot) {
+      void this.readTimestampSlot(timingSlot, submittedWidth, submittedHeight, submittedScale);
+    }
     return true;
   }
 
+  private takeTimestampSlot(): TimestampSlot | null {
+    if (this.timestampSlots.length === 0) return null;
+    for (let tries = 0; tries < this.timestampSlots.length; tries++) {
+      const index = (this.nextTimestampSlot + tries) % this.timestampSlots.length;
+      const slot = this.timestampSlots[index];
+      if (!slot.busy) {
+        slot.busy = true;
+        this.nextTimestampSlot = (index + 1) % this.timestampSlots.length;
+        return slot;
+      }
+    }
+    return null;
+  }
+
+  private async readTimestampSlot(slot: TimestampSlot, width: number, height: number, scale: number): Promise<void> {
+    let mapped = false;
+    try {
+      await slot.readbackBuffer.mapAsync(MAP_MODE.READ, 0, TIMESTAMP_RESULT_BYTES);
+      mapped = true;
+      const data = new BigUint64Array(slot.readbackBuffer.getMappedRange(0, TIMESTAMP_RESULT_BYTES));
+      const begin = data[0];
+      const end = data[1];
+      const durationNs = end > begin ? end - begin : 0n;
+      const gpuMs = Number(durationNs) / 1_000_000;
+      const completedAt = performance.now();
+      this.gpuMsEma = Number.isFinite(this.gpuMsEma) ? this.gpuMsEma + (gpuMs - this.gpuMsEma) * 0.12 : gpuMs;
+      this.frameTimings.push({
+        gpuMs,
+        width,
+        height,
+        scale,
+        gpuTimerAvailable: true,
+        completedAt,
+      });
+      if (this.frameTimings.length > 900) this.frameTimings.splice(0, this.frameTimings.length - 900);
+    } catch {
+      // Timer readback can fail if the device is lost or a browser revokes the
+      // optional timestamp-query feature; skip that sample instead of falling
+      // back to CPU wall time.
+    } finally {
+      if (mapped) slot.readbackBuffer.unmap();
+      slot.busy = false;
+    }
+  }
+
   private adjustScale(): void {
-    if (!this.autoScale) return;
+    if (!this.autoScale || this.timestampSlots.length === 0 || !Number.isFinite(this.gpuMsEma)) return;
     const now = performance.now();
     if (now - this.lastScaleAdjust < 600) return;
     this.lastScaleAdjust = now;
