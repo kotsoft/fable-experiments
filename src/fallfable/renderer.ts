@@ -94,8 +94,8 @@ export class FallfableRenderer {
   private context: GPUCanvasContext;
   private canvas: HTMLCanvasElement;
   private tracePipeline: GPUComputePipeline;
-  private classifierGridPipeline: GPUComputePipeline;
-  private classifierTilePipeline: GPUComputePipeline;
+  private classifierFeaturePipeline: GPUComputePipeline;
+  private classifierVisualPipeline: GPUComputePipeline;
   private skyPipeline: GPUComputePipeline;
   private presentPipeline: GPURenderPipeline;
   private uniformBuffer: GPUBuffer;
@@ -105,12 +105,15 @@ export class FallfableRenderer {
   private uniforms = new Float32Array(UNIFORM_FLOATS);
 
   private traceTexture: GPUTexture | null = null;
+  private classifierTexture: GPUTexture | null = null;
   private traceBindGroup: GPUBindGroup | null = null;
-  private classifierGridBindGroup: GPUBindGroup | null = null;
-  private classifierTileBindGroup: GPUBindGroup | null = null;
+  private classifierFeatureBindGroup: GPUBindGroup | null = null;
+  private classifierVisualBindGroup: GPUBindGroup | null = null;
   private presentBindGroup: GPUBindGroup | null = null;
   private traceWidth = 0;
   private traceHeight = 0;
+  private classifierWidth = 0;
+  private classifierHeight = 0;
   private displayAspect = 16 / 9;
 
   private inFlight = 0;
@@ -141,13 +144,13 @@ export class FallfableRenderer {
       layout: 'auto',
       compute: { module: traceModule, entryPoint: 'main' },
     });
-    this.classifierGridPipeline = device.createComputePipeline({
+    this.classifierFeaturePipeline = device.createComputePipeline({
       layout: 'auto',
-      compute: { module: traceModule, entryPoint: 'classify_grid_main' },
+      compute: { module: traceModule, entryPoint: 'classify_features_main' },
     });
-    this.classifierTilePipeline = device.createComputePipeline({
+    this.classifierVisualPipeline = device.createComputePipeline({
       layout: 'auto',
-      compute: { module: traceModule, entryPoint: 'classify_tile_main' },
+      compute: { module: traceModule, entryPoint: 'visualize_classifier_main' },
     });
     this.skyPipeline = device.createComputePipeline({
       layout: 'auto',
@@ -243,33 +246,45 @@ export class FallfableRenderer {
     this.device.queue.writeBuffer(this.uniformBuffer, 0, this.uniforms);
     const timingSlot = this.takeTimestampSlot();
     const diagnosticMode = Math.floor(this.options.sky.debugStatus ?? 0);
-    const classifierBlockSize = diagnosticMode === 4 ? 4 : diagnosticMode === 5 ? 8 : 0;
-    if (classifierBlockSize === 4 && !this.classifierGridBindGroup) return false;
-    if (classifierBlockSize === 8 && !this.classifierTileBindGroup) return false;
+    const needsClassifier = diagnosticMode === 4 || diagnosticMode === 5;
+    if (needsClassifier && (!this.classifierTexture || !this.classifierFeatureBindGroup || !this.classifierVisualBindGroup)) {
+      return false;
+    }
 
     const encoder = this.device.createCommandEncoder();
-    const compute = encoder.beginComputePass(timingSlot
-      ? {
-          timestampWrites: {
-            querySet: timingSlot.querySet,
-            beginningOfPassWriteIndex: 0,
-          },
-        }
-      : undefined);
-    if (classifierBlockSize > 0) {
-      const classifierBindGroup = classifierBlockSize === 4 ? this.classifierGridBindGroup : this.classifierTileBindGroup;
-      compute.setPipeline(classifierBlockSize === 4 ? this.classifierGridPipeline : this.classifierTilePipeline);
-      compute.setBindGroup(0, classifierBindGroup);
-      compute.dispatchWorkgroups(
-        Math.ceil(Math.ceil(this.traceWidth / classifierBlockSize) / 8),
-        Math.ceil(Math.ceil(this.traceHeight / classifierBlockSize) / 8),
-      );
+    if (needsClassifier) {
+      const classify = encoder.beginComputePass(timingSlot
+        ? {
+            timestampWrites: {
+              querySet: timingSlot.querySet,
+              beginningOfPassWriteIndex: 0,
+            },
+          }
+        : undefined);
+      classify.setPipeline(this.classifierFeaturePipeline);
+      classify.setBindGroup(0, this.classifierFeatureBindGroup);
+      classify.dispatchWorkgroups(Math.ceil(this.classifierWidth / 8), Math.ceil(this.classifierHeight / 8));
+      classify.end();
+
+      const visualize = encoder.beginComputePass();
+      visualize.setPipeline(this.classifierVisualPipeline);
+      visualize.setBindGroup(0, this.classifierVisualBindGroup);
+      visualize.dispatchWorkgroups(Math.ceil(this.traceWidth / 8), Math.ceil(this.traceHeight / 8));
+      visualize.end();
     } else {
+      const compute = encoder.beginComputePass(timingSlot
+        ? {
+            timestampWrites: {
+              querySet: timingSlot.querySet,
+              beginningOfPassWriteIndex: 0,
+            },
+          }
+        : undefined);
       compute.setPipeline(this.tracePipeline);
       compute.setBindGroup(0, this.traceBindGroup);
       compute.dispatchWorkgroups(Math.ceil(this.traceWidth / 8), Math.ceil(this.traceHeight / 8));
+      compute.end();
     }
-    compute.end();
 
     const pass = encoder.beginRenderPass({
       colorAttachments: [
@@ -382,33 +397,53 @@ export class FallfableRenderer {
     if (w === this.traceWidth && h === this.traceHeight && this.traceTexture) return;
 
     this.traceTexture?.destroy();
-    this.classifierGridBindGroup = null;
-    this.classifierTileBindGroup = null;
+    this.classifierTexture?.destroy();
+    this.classifierFeatureBindGroup = null;
+    this.classifierVisualBindGroup = null;
     this.traceTexture = this.device.createTexture({
       size: { width: w, height: h },
       format: 'rgba16float',
       usage: TEXTURE_USAGE.STORAGE_BINDING | TEXTURE_USAGE.TEXTURE_BINDING,
     });
+    const classifierWidth = Math.max(1, Math.ceil(w / 4));
+    const classifierHeight = Math.max(1, Math.ceil(h / 4));
+    this.classifierTexture = this.device.createTexture({
+      size: { width: classifierWidth, height: classifierHeight },
+      format: 'rgba16float',
+      usage: TEXTURE_USAGE.STORAGE_BINDING | TEXTURE_USAGE.TEXTURE_BINDING,
+    });
     this.traceWidth = w;
     this.traceHeight = h;
+    this.classifierWidth = classifierWidth;
+    this.classifierHeight = classifierHeight;
     const view = this.traceTexture.createView();
-    const traceEntries: GPUBindGroupEntry[] = [
-      { binding: 0, resource: { buffer: this.uniformBuffer } },
-      { binding: 1, resource: view },
-      { binding: 2, resource: this.skySampler },
-      { binding: 3, resource: this.skyMilkyTexture.createView() },
-    ];
+    const classifierView = this.classifierTexture.createView();
+    const skyView = this.skyMilkyTexture.createView();
     this.traceBindGroup = this.device.createBindGroup({
       layout: this.tracePipeline.getBindGroupLayout(0),
-      entries: traceEntries,
+      entries: [
+        { binding: 0, resource: { buffer: this.uniformBuffer } },
+        { binding: 1, resource: view },
+        { binding: 2, resource: this.skySampler },
+        { binding: 3, resource: skyView },
+      ],
     });
-    this.classifierGridBindGroup = this.device.createBindGroup({
-      layout: this.classifierGridPipeline.getBindGroupLayout(0),
-      entries: traceEntries,
+    this.classifierFeatureBindGroup = this.device.createBindGroup({
+      layout: this.classifierFeaturePipeline.getBindGroupLayout(0),
+      entries: [
+        { binding: 0, resource: { buffer: this.uniformBuffer } },
+        { binding: 1, resource: classifierView },
+        { binding: 2, resource: this.skySampler },
+        { binding: 3, resource: skyView },
+      ],
     });
-    this.classifierTileBindGroup = this.device.createBindGroup({
-      layout: this.classifierTilePipeline.getBindGroupLayout(0),
-      entries: traceEntries,
+    this.classifierVisualBindGroup = this.device.createBindGroup({
+      layout: this.classifierVisualPipeline.getBindGroupLayout(0),
+      entries: [
+        { binding: 0, resource: { buffer: this.uniformBuffer } },
+        { binding: 1, resource: view },
+        { binding: 4, resource: classifierView },
+      ],
     });
     this.presentBindGroup = this.device.createBindGroup({
       layout: this.presentPipeline.getBindGroupLayout(0),

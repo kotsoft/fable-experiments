@@ -188,6 +188,7 @@ struct Uniforms {
 @group(0) @binding(1) var outImage: texture_storage_2d<rgba16float, write>;
 @group(0) @binding(2) var skySampler: sampler;
 @group(0) @binding(3) var skyMilky: texture_2d<f32>;
+@group(0) @binding(4) var classifierImage: texture_2d<f32>;
 
 // ---------------------------------------------------------------- geometry
 
@@ -495,18 +496,20 @@ fn disk_sample(pos: vec4<f32>, mom: vec4<f32>, dl: f32) -> DiskSample {
 
 // ---------------------------------------------------------------- trace
 
+const CLASSIFIER_MAX_STEP_SCALE = 0.4;
+
 struct TraceResult {
   color: vec3<f32>,
   status: f32,
   steps: f32,
 };
 
-fn trace_result_mode(px: vec2<f32>, dims: vec2<f32>, shadeSky: bool) -> TraceResult {
+fn trace_result_mode(px: vec2<f32>, dims: vec2<f32>, shadeSky: bool, maxStepScale: f32) -> TraceResult {
   let spin = u.geo.x;
   let mass = u.geo.y;
   let baseStep = u.geo.z;
   let escapeR = u.geo.w;
-  let maxSteps = i32(u.march.x);
+  let maxSteps = max(1, i32(floor(u.march.x * maxStepScale)));
   let cutoff = u.march.y;
   let horizon = mass + sqrt(max(mass * mass - spin * spin, 0.0));
 
@@ -604,7 +607,7 @@ fn trace_result_mode(px: vec2<f32>, dims: vec2<f32>, shadeSky: bool) -> TraceRes
 }
 
 fn trace_result(px: vec2<f32>, dims: vec2<f32>) -> TraceResult {
-  return trace_result_mode(px, dims, true);
+  return trace_result_mode(px, dims, true, 1.0);
 }
 
 fn trace_linear_cost(result: TraceResult) -> f32 {
@@ -633,37 +636,48 @@ fn trace(px: vec2<f32>, dims: vec2<f32>) -> vec3<f32> {
   return trace_debug_color(trace_result(px, dims));
 }
 
-fn classifier_color(result: TraceResult) -> vec3<f32> {
-  let cost = trace_cost(result);
-  if (result.status == 4.0 && cost < 0.38) {
-    return mix(vec3<f32>(0.015, 0.07, 0.19), vec3<f32>(0.0, 0.34, 0.88), cost / 0.38);
-  }
-  if ((result.status == 2.0 || result.status == 3.0) && cost < 0.42) {
-    return mix(vec3<f32>(0.10, 0.01, 0.015), vec3<f32>(0.62, 0.04, 0.12), cost / 0.42);
-  }
-  return termination_color(result.status) * (0.16 + 1.85 * cost);
+fn classifier_feature(result: TraceResult) -> vec4<f32> {
+  return vec4<f32>(result.status, trace_linear_cost(result), trace_cost(result), 1.0);
 }
 
-fn worse_trace(a: TraceResult, b: TraceResult) -> TraceResult {
-  if (trace_linear_cost(b) > trace_linear_cost(a)) {
+fn classifier_status(feature: vec4<f32>) -> f32 {
+  return floor(feature.x + 0.5);
+}
+
+fn classifier_risk(feature: vec4<f32>) -> f32 {
+  let status = classifier_status(feature);
+  var risk = feature.y;
+  if (status == 5.0) {
+    risk = risk + 2.0; // disk samples are never "safe sky/shadow" tiles.
+  }
+  if (status == 0.0 || status == 1.0) {
+    risk = risk + 1.5; // cap/singularity means keep the tile on the slow path.
+  }
+  return risk;
+}
+
+fn worse_feature(a: vec4<f32>, b: vec4<f32>) -> vec4<f32> {
+  if (classifier_risk(b) > classifier_risk(a)) {
     return b;
   }
   return a;
 }
 
-fn store_block(origin: vec2<u32>, blockSize: u32, dims: vec2<u32>, color: vec3<f32>) {
-  for (var oy = 0u; oy < blockSize; oy = oy + 1u) {
-    let y = origin.y + oy;
-    if (y >= dims.y) {
-      continue;
-    }
-    for (var ox = 0u; ox < blockSize; ox = ox + 1u) {
-      let x = origin.x + ox;
-      if (x < dims.x) {
-        textureStore(outImage, vec2<i32>(i32(x), i32(y)), vec4<f32>(color, 1.0));
-      }
-    }
+fn classifier_color_from_feature(feature: vec4<f32>) -> vec3<f32> {
+  let status = classifier_status(feature);
+  let cost = feature.z;
+  if (status == 4.0 && cost < 0.38) {
+    return mix(vec3<f32>(0.015, 0.07, 0.19), vec3<f32>(0.0, 0.34, 0.88), cost / 0.38);
   }
+  if ((status == 2.0 || status == 3.0) && cost < 0.42) {
+    return mix(vec3<f32>(0.10, 0.01, 0.015), vec3<f32>(0.62, 0.04, 0.12), cost / 0.42);
+  }
+  return termination_color(status) * (0.16 + 1.85 * cost);
+}
+
+fn load_classifier_feature(coord: vec2<u32>, dims: vec2<u32>) -> vec4<f32> {
+  let clamped = min(coord, dims - vec2<u32>(1u, 1u));
+  return textureLoad(classifierImage, vec2<i32>(i32(clamped.x), i32(clamped.y)), 0);
 }
 
 @compute @workgroup_size(8, 8)
@@ -677,32 +691,35 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
 }
 
 @compute @workgroup_size(8, 8)
-fn classify_grid_main(@builtin(global_invocation_id) id: vec3<u32>) {
+fn classify_features_main(@builtin(global_invocation_id) id: vec3<u32>) {
   let dims = textureDimensions(outImage);
-  let classDims = (dims + vec2<u32>(3u, 3u)) / vec2<u32>(4u, 4u);
-  if (id.x >= classDims.x || id.y >= classDims.y) {
+  if (id.x >= dims.x || id.y >= dims.y) {
     return;
   }
   let origin = id.xy * 4u;
+  let fullDims = vec2<f32>(f32(dims.x * 4u), f32(dims.y * 4u));
   let samplePx = vec2<f32>(f32(origin.x) + 1.5, f32(origin.y) + 1.5);
-  let result = trace_result_mode(samplePx, vec2<f32>(f32(dims.x), f32(dims.y)), false);
-  store_block(origin, 4u, dims, classifier_color(result));
+  let result = trace_result_mode(samplePx, fullDims, false, CLASSIFIER_MAX_STEP_SCALE);
+  textureStore(outImage, vec2<i32>(i32(id.x), i32(id.y)), classifier_feature(result));
 }
 
 @compute @workgroup_size(8, 8)
-fn classify_tile_main(@builtin(global_invocation_id) id: vec3<u32>) {
+fn visualize_classifier_main(@builtin(global_invocation_id) id: vec3<u32>) {
   let dims = textureDimensions(outImage);
-  let tileDims = (dims + vec2<u32>(7u, 7u)) / vec2<u32>(8u, 8u);
-  if (id.x >= tileDims.x || id.y >= tileDims.y) {
+  if (id.x >= dims.x || id.y >= dims.y) {
     return;
   }
-  let origin = id.xy * 8u;
-  let fullDims = vec2<f32>(f32(dims.x), f32(dims.y));
-  var best = trace_result_mode(vec2<f32>(f32(origin.x) + 1.5, f32(origin.y) + 1.5), fullDims, false);
-  best = worse_trace(best, trace_result_mode(vec2<f32>(f32(origin.x) + 5.5, f32(origin.y) + 1.5), fullDims, false));
-  best = worse_trace(best, trace_result_mode(vec2<f32>(f32(origin.x) + 1.5, f32(origin.y) + 5.5), fullDims, false));
-  best = worse_trace(best, trace_result_mode(vec2<f32>(f32(origin.x) + 5.5, f32(origin.y) + 5.5), fullDims, false));
-  store_block(origin, 8u, dims, classifier_color(best));
+  let classDims = textureDimensions(classifierImage);
+  var feature = load_classifier_feature(id.xy / 4u, classDims);
+  if (u.sky.w > 4.5) {
+    let tileBase = (id.xy / 8u) * 2u;
+    feature = load_classifier_feature(tileBase, classDims);
+    feature = worse_feature(feature, load_classifier_feature(tileBase + vec2<u32>(1u, 0u), classDims));
+    feature = worse_feature(feature, load_classifier_feature(tileBase + vec2<u32>(0u, 1u), classDims));
+    feature = worse_feature(feature, load_classifier_feature(tileBase + vec2<u32>(1u, 1u), classDims));
+  }
+  let rgb = classifier_color_from_feature(feature);
+  textureStore(outImage, vec2<i32>(i32(id.x), i32(id.y)), vec4<f32>(rgb, 1.0));
 }
 `;
 
