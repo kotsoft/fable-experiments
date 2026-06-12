@@ -71,6 +71,8 @@ const TIMESTAMP_QUERY_COUNT = 8;
 const TIMESTAMP_RESULT_BYTES = TIMESTAMP_QUERY_COUNT * 8;
 const SKY_ATLAS_WIDTH = 1024;
 const SKY_ATLAS_HEIGHT = 512;
+const DISK_NOISE_SIZE = 64;
+const DISK_NOISE_BYTES_PER_ROW = 256;
 
 // The flag namespaces are runtime globals the TS lib in this project does not
 // declare; fall back to the spec-fixed bit values when they are absent.
@@ -84,7 +86,7 @@ const BUFFER_USAGE: GpuFlags = gpuGlobals.GPUBufferUsage ?? {
   QUERY_RESOLVE: 0x200,
 };
 const MAP_MODE: GpuFlags = gpuGlobals.GPUMapMode ?? { READ: 0x01 };
-const TEXTURE_USAGE: GpuFlags = gpuGlobals.GPUTextureUsage ?? { TEXTURE_BINDING: 0x04, STORAGE_BINDING: 0x08 };
+const TEXTURE_USAGE: GpuFlags = gpuGlobals.GPUTextureUsage ?? { COPY_DST: 0x02, TEXTURE_BINDING: 0x04, STORAGE_BINDING: 0x08 };
 
 interface TimestampSlot {
   querySet: GPUQuerySet;
@@ -120,7 +122,9 @@ export class FallfableRenderer {
   private uniformBuffer: GPUBuffer;
   private presentSampler: GPUSampler;
   private skySampler: GPUSampler;
+  private diskNoiseSampler: GPUSampler;
   private skyMilkyTexture: GPUTexture;
+  private diskNoiseTexture: GPUTexture;
   private uniforms = new Float32Array(UNIFORM_FLOATS);
 
   private traceTexture: GPUTexture | null = null;
@@ -214,8 +218,17 @@ export class FallfableRenderer {
       magFilter: 'linear',
       minFilter: 'linear',
     });
+    this.diskNoiseSampler = device.createSampler({
+      addressModeU: 'repeat',
+      addressModeV: 'repeat',
+      addressModeW: 'repeat',
+      magFilter: 'linear',
+      minFilter: 'linear',
+    });
     this.skyMilkyTexture = this.createSkyAtlasTexture('fallfable milky way atlas');
+    this.diskNoiseTexture = this.createDiskNoiseTexture('fallfable disk noise atlas');
     this.generateSkyAtlas();
+    this.generateDiskNoise();
     if (device.features.has('timestamp-query')) {
       this.timestampSlots = Array.from({ length: TIMING_SLOT_COUNT }, () => ({
         querySet: device.createQuerySet({ type: 'timestamp', count: TIMESTAMP_QUERY_COUNT }),
@@ -561,6 +574,7 @@ export class FallfableRenderer {
     const classifierView = this.classifierTexture.createView();
     const lensView = this.lensTexture.createView();
     const skyView = this.skyMilkyTexture.createView();
+    const diskNoiseView = this.diskNoiseTexture.createView({ dimension: '3d' });
     this.traceBindGroup = this.device.createBindGroup({
       layout: this.tracePipeline.getBindGroupLayout(0),
       entries: [
@@ -568,6 +582,8 @@ export class FallfableRenderer {
         { binding: 1, resource: view },
         { binding: 2, resource: this.skySampler },
         { binding: 3, resource: skyView },
+        { binding: 7, resource: this.diskNoiseSampler },
+        { binding: 8, resource: diskNoiseView },
       ],
     });
     this.classifierFeatureBindGroup = this.device.createBindGroup({
@@ -578,6 +594,8 @@ export class FallfableRenderer {
         { binding: 2, resource: this.skySampler },
         { binding: 3, resource: skyView },
         { binding: 5, resource: lensView },
+        { binding: 7, resource: this.diskNoiseSampler },
+        { binding: 8, resource: diskNoiseView },
       ],
     });
     this.classifierVisualBindGroup = this.device.createBindGroup({
@@ -604,6 +622,8 @@ export class FallfableRenderer {
         { binding: 2, resource: this.skySampler },
         { binding: 3, resource: skyView },
         { binding: 4, resource: classifierView },
+        { binding: 7, resource: this.diskNoiseSampler },
+        { binding: 8, resource: diskNoiseView },
       ],
     });
     this.adaptiveFillBindGroup = this.device.createBindGroup({
@@ -626,6 +646,8 @@ export class FallfableRenderer {
         { binding: 3, resource: skyView },
         { binding: 4, resource: classifierView },
         { binding: 6, resource: lensView },
+        { binding: 7, resource: this.diskNoiseSampler },
+        { binding: 8, resource: diskNoiseView },
       ],
     });
     this.presentBindGroup = this.device.createBindGroup({
@@ -647,6 +669,16 @@ export class FallfableRenderer {
     });
   }
 
+  private createDiskNoiseTexture(label: string): GPUTexture {
+    return this.device.createTexture({
+      label,
+      dimension: '3d',
+      size: { width: DISK_NOISE_SIZE, height: DISK_NOISE_SIZE, depthOrArrayLayers: DISK_NOISE_SIZE },
+      format: 'r8unorm',
+      usage: TEXTURE_USAGE.COPY_DST | TEXTURE_USAGE.TEXTURE_BINDING,
+    });
+  }
+
   private generateSkyAtlas(): void {
     const bindGroup = this.device.createBindGroup({
       layout: this.skyPipeline.getBindGroupLayout(0),
@@ -661,6 +693,15 @@ export class FallfableRenderer {
     pass.dispatchWorkgroups(Math.ceil(SKY_ATLAS_WIDTH / 8), Math.ceil(SKY_ATLAS_HEIGHT / 8));
     pass.end();
     this.device.queue.submit([encoder.finish()]);
+  }
+
+  private generateDiskNoise(): void {
+    this.device.queue.writeTexture(
+      { texture: this.diskNoiseTexture },
+      buildDiskNoiseData(),
+      { bytesPerRow: DISK_NOISE_BYTES_PER_ROW, rowsPerImage: DISK_NOISE_SIZE },
+      { width: DISK_NOISE_SIZE, height: DISK_NOISE_SIZE, depthOrArrayLayers: DISK_NOISE_SIZE },
+    );
   }
 
   private packUniforms(frame: SceneFrame): void {
@@ -717,4 +758,89 @@ function timestampDurationMs(data: BigUint64Array, range: TimestampRange | undef
   const end = data[range[1]];
   const durationNs = end > begin ? end - begin : 0n;
   return Number(durationNs) / 1_000_000;
+}
+
+function buildDiskNoiseData(): Uint8Array {
+  const imageStride = DISK_NOISE_BYTES_PER_ROW * DISK_NOISE_SIZE;
+  const data = new Uint8Array(imageStride * DISK_NOISE_SIZE);
+  for (let z = 0; z < DISK_NOISE_SIZE; z += 1) {
+    for (let y = 0; y < DISK_NOISE_SIZE; y += 1) {
+      const row = z * imageStride + y * DISK_NOISE_BYTES_PER_ROW;
+      for (let x = 0; x < DISK_NOISE_SIZE; x += 1) {
+        const noise = periodicFbm3(x + 0.5, y + 0.5, z + 0.5, DISK_NOISE_SIZE);
+        data[row + x] = Math.round(Math.min(Math.max(noise, 0), 1) * 255);
+      }
+    }
+  }
+  return data;
+}
+
+function periodicFbm3(x: number, y: number, z: number, period: number): number {
+  let total = 0;
+  let amp = 0.5;
+  let qx = x;
+  let qy = y;
+  let qz = z;
+  let octavePeriod = period;
+  for (let i = 0; i < 3; i += 1) {
+    total += amp * periodicValueNoise(qx, qy, qz, octavePeriod);
+    qx = qx * 2 + 7.7;
+    qy = qy * 2 + 3.1;
+    qz = qz * 2 + 1.9;
+    octavePeriod *= 2;
+    amp *= 0.5;
+  }
+  return total;
+}
+
+function periodicValueNoise(x: number, y: number, z: number, period: number): number {
+  const ix = Math.floor(x);
+  const iy = Math.floor(y);
+  const iz = Math.floor(z);
+  const fx = x - ix;
+  const fy = y - iy;
+  const fz = z - iz;
+  const sx = smooth01(fx);
+  const sy = smooth01(fy);
+  const sz = smooth01(fz);
+  const x0 = wrapIndex(ix, period);
+  const x1 = wrapIndex(ix + 1, period);
+  const y0 = wrapIndex(iy, period);
+  const y1 = wrapIndex(iy + 1, period);
+  const z0 = wrapIndex(iz, period);
+  const z1 = wrapIndex(iz + 1, period);
+
+  const n000 = hashIndex3(x0, y0, z0);
+  const n100 = hashIndex3(x1, y0, z0);
+  const n010 = hashIndex3(x0, y1, z0);
+  const n110 = hashIndex3(x1, y1, z0);
+  const n001 = hashIndex3(x0, y0, z1);
+  const n101 = hashIndex3(x1, y0, z1);
+  const n011 = hashIndex3(x0, y1, z1);
+  const n111 = hashIndex3(x1, y1, z1);
+
+  const nx00 = mix(n000, n100, sx);
+  const nx10 = mix(n010, n110, sx);
+  const nx01 = mix(n001, n101, sx);
+  const nx11 = mix(n011, n111, sx);
+  return mix(mix(nx00, nx10, sy), mix(nx01, nx11, sy), sz);
+}
+
+function hashIndex3(x: number, y: number, z: number): number {
+  let h = Math.imul(x + 0x9e3779b9, 0x85ebca6b) ^ Math.imul(y + 0xc2b2ae35, 0x27d4eb2f) ^ Math.imul(z + 0x165667b1, 0x9e3779b1);
+  h = Math.imul(h ^ (h >>> 15), 0x2c1b3c6d);
+  h = Math.imul(h ^ (h >>> 12), 0x297a2d39);
+  return ((h ^ (h >>> 15)) >>> 0) / 0x100000000;
+}
+
+function wrapIndex(value: number, period: number): number {
+  return ((value % period) + period) % period;
+}
+
+function smooth01(value: number): number {
+  return value * value * (3 - 2 * value);
+}
+
+function mix(a: number, b: number, t: number): number {
+  return a + (b - a) * t;
 }

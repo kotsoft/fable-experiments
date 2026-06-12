@@ -191,6 +191,8 @@ struct Uniforms {
 @group(0) @binding(4) var classifierImage: texture_2d<f32>;
 @group(0) @binding(5) var lensOut: texture_storage_2d<rgba16float, write>;
 @group(0) @binding(6) var lensImage: texture_2d<f32>;
+@group(0) @binding(7) var diskNoiseSampler: sampler;
+@group(0) @binding(8) var diskNoise: texture_3d<f32>;
 
 // ---------------------------------------------------------------- geometry
 
@@ -406,7 +408,7 @@ fn disk_turbulence(
     cos(spiralAz) * arcRadius,
     sin(spiralAz) * arcRadius + q.z
   );
-  return fbm3(noiseP * (4.4 / inner));
+  return textureSampleLevel(diskNoise, diskNoiseSampler, fract(noiseP * (4.4 / inner) / 64.0), 0.0).r;
 }
 
 fn disk_sample(pos: vec4<f32>, mom: vec4<f32>, dl: f32) -> DiskSample {
