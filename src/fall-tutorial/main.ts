@@ -394,7 +394,7 @@ function drawLegend(svg: SVGSVGElement, items: [string, string][], x: number, y:
   txt(svg, 400, 382, 'k = e_time + x e_right + y e_up + z e_forward', { fill: C.fg, 'font-size': 17 });
 }
 
-// Diagram 5: shader ray-tracing pipeline.
+// Diagram 5: current shader path and production target.
 {
   const svg = svgRoot('svgPipeline');
   const box = (x: number, y: number, w: number, h: number, label: string, note: string, stroke = C.line): void => {
@@ -404,20 +404,24 @@ function drawLegend(svg: SVGSVGElement, items: [string, string][], x: number, y:
   };
   const arrow = (x1: number, y1: number, x2: number, y2: number): void => drawArrow(svg, x1, y1, x2, y2, C.dim);
 
-  box(52, 165, 155, 82, 'screen ray', 'rdLocal');
-  box(250, 165, 155, 82, 'tetrad', 'make photon k');
-  box(448, 70, 230, 92, 'outside r > 1', 'impact b + photon potential', C.accent);
-  box(448, 268, 230, 92, 'inside r < 1', 'Hamiltonian RK4 in q,p', C.blue);
-  box(610, 170, 135, 80, 'samples', 'stars + disk');
+  box(40, 64, 150, 72, 'screen ray', 'rdLocal');
+  box(226, 64, 165, 72, 'observer tetrad', 'make local photon');
+  box(432, 28, 300, 82, 'research target', 'one Kerr-Schild Hamiltonian path', C.accent);
+  box(432, 152, 136, 82, 'current outside', 'impact b shortcut', C.green);
+  box(596, 152, 136, 82, 'current inside', 'Hamiltonian RK4', C.blue);
+  box(250, 285, 300, 72, 'radiative samples', 'sky, disk hits, volume opacity');
 
-  arrow(207, 206, 250, 206);
-  arrow(405, 196, 448, 132);
-  arrow(405, 216, 448, 314);
-  arrow(678, 116, 678, 170);
-  arrow(678, 268, 678, 250);
-  txt(svg, 426, 176, 'branch by camera radius', { fill: C.dim, 'font-size': 14 });
+  arrow(190, 100, 226, 100);
+  arrow(391, 92, 432, 69);
+  arrow(391, 112, 432, 193);
+  arrow(568, 193, 596, 193);
+  arrow(580, 110, 438, 285);
+  arrow(500, 234, 390, 285);
+  arrow(664, 234, 430, 285);
+  txt(svg, 412, 147, 'demo branch by radius', { fill: C.dim, 'font-size': 14 });
+  txt(svg, 582, 122, 'preferred product core', { fill: C.accent, 'font-size': 14 });
 
-  el(svg, 'path', { d: 'M92 72C180 30 270 60 340 108S482 170 608 108', fill: 'none', stroke: C.grid, 'stroke-width': 2 });
-  el(svg, 'circle', { cx: 355, cy: 112, r: 28, fill: '#000', stroke: '#3a3f4a', 'stroke-width': 1.5 });
-  txt(svg, 356, 64, 'backward photon trace', { fill: C.dim, 'font-size': 15 });
+  el(svg, 'path', { d: 'M82 392C180 350 278 378 356 330S516 250 706 314', fill: 'none', stroke: C.grid, 'stroke-width': 2 });
+  el(svg, 'circle', { cx: 390, cy: 318, r: 24, fill: '#000', stroke: '#3a3f4a', 'stroke-width': 1.5 });
+  txt(svg, 392, 406, 'backward ray tracing starts at the physical observer, not at a Euclidean camera', { fill: C.dim, 'font-size': 15 });
 }

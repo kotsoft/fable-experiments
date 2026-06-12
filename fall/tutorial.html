@@ -92,6 +92,12 @@
         own proper time, builds a local relativistic camera frame around it, then ray-traces what
         light reaches that falling observer.
       </p>
+      <p class="note">
+        This page assumes the <a href="/blackhole/tutorial.html">light-bending baseline</a> and
+        the <a href="/kerr/tutorial.html">Kerr-Schild integrator</a> are already familiar. It
+        focuses on the part those pages do not teach: how to make the camera itself a physical
+        observer with clocks, conserved quantities, a local tetrad, and a horizon-crossing frame.
+      </p>
 
       <h2>1 - The state of the falling observer</h2>
       <p>
@@ -207,20 +213,22 @@ angularMomentum = r * gamma * betaTangential;</code></pre>
       <pre><code>photon = eTime + eRight * rdLocal.x + eUp * rdLocal.y + eForward * rdLocal.z;
 rd = normalize(photon.yzw);</code></pre>
 
-      <h2>6 - Rendering light around the falling camera</h2>
+      <h2>6 - Rays from a moving observer</h2>
       <p>
-        The renderer traces photons backward from the falling camera. Outside the horizon it can
-        use the same Schwarzschild light-orbit shortcut as the original tutorial: each ray has an
-        impact parameter <var>b</var>, and its radius/angle are marched through the photon
-        potential.
+        The renderer traces photons backward from the falling camera, but the important new step is
+        the launch frame. A screen ray first becomes a local photon through the tetrad above; only
+        then does the shader integrate it through the black-hole spacetime. That separation is what
+        lets the same sky renderer work for a hovering camera, a plunging camera, or eventually a
+        freely falling Kerr observer.
       </p>
       <p class="eq">
-        b = r n<sub>tangent</sub> / √(1 - 1/r), &nbsp;
-        (dr/dλ)² = 1 - (1 - 1/r)b²/r²
+        local screen ray → tetrad photon → coordinate momentum → backward geodesic
       </p>
       <p>
-        Inside the horizon, the shader switches to a Hamiltonian in Kerr-Schild-like Cartesian
-        coordinates, which do not blow up at <var>r</var> = 1:
+        The current Schwarzschild demo has a pragmatic split. Outside the horizon it uses the
+        fast photon-potential method taught in the baseline tutorial. Inside the horizon it switches
+        to a Hamiltonian in Kerr-Schild-like Cartesian coordinates, which do not blow up at
+        <var>r</var> = 1:
       </p>
       <p class="eq">
         H(q,p) = ½[-1 + |p|² - (1/r)(-1 + l·p)²]
@@ -233,9 +241,10 @@ rd = normalize(photon.yzw);</code></pre>
         </figcaption>
       </figure>
       <p>
-        Both paths sample the same disk volume and starfield. The final color is shifted by a
-        combined gravitational and velocity factor, so the sky changes hue and brightness as the
-        camera accelerates:
+        The deeper research target removes this branch: use one Kerr-Schild Hamiltonian ray path
+        everywhere, even outside the horizon, then use the Schwarzschild shortcut only as a test
+        mode. The final color still needs the falling observer's motion, so the demo applies a
+        compact gravitational/velocity shift:
       </p>
       <pre><code>shift = gamma * (1 + dot(observerBeta, rayDir)) / sqrt(abs(1 - 1 / r));</code></pre>
 
@@ -246,6 +255,20 @@ rd = normalize(photon.yzw);</code></pre>
         geodesic with <code>launchFromLocal</code>, and calls <code>previewFall</code> to draw a
         short proper-time future. Releasing the pointer simply lets that already-computed state
         start evolving in real time.
+      </p>
+      <p>
+        In the full Kerr version, this same UI action would create an observer tetrad and
+        four-velocity in ingoing Cartesian Kerr-Schild coordinates, then validate the preview by
+        watching energy, angular momentum, the null constraint for camera rays, and smoothness at
+        the horizon.
+      </p>
+      <h2>8 - What this page leaves to the others</h2>
+      <p>
+        The fall page deliberately avoids reteaching photon rings, disk arcs, and Doppler beaming:
+        those are covered in the baseline light-ray tutorial. It also avoids deriving the full Kerr
+        Hamiltonian and shadow checks: those belong to the spin tutorial. The unique lesson here is
+        the observer pipeline: choose a local launch, integrate the worldline in proper time, build
+        the tetrad, and launch every rendered photon from that physical frame.
       </p>
       <p class="note">
         All figures on this page are SVG. The trajectory, potential, and clock plots are generated

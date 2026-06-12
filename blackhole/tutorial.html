@@ -92,6 +92,13 @@
         rays through curved spacetime, per pixel, on the GPU. This page walks through the math it
         actually runs.
       </p>
+      <p class="note">
+        In the larger renderer plan, this page is the baseline and validation case: Schwarzschild
+        is symmetric enough to teach light bending cleanly and to give exact checks for the Kerr
+        and falling-camera pages. It is not the final product architecture for horizon crossing or
+        spin; those belong to the <a href="/kerr/tutorial.html">Kerr</a> and
+        <a href="/fall/tutorial.html">fall</a> tutorials.
+      </p>
 
       <h2>1 — The spacetime</h2>
       <p>
@@ -432,9 +439,14 @@ transmittance *= exp(-absorption * dt);</code></pre>
       </p>
       <p class="note">
         Everything in the figures above was integrated live on this page with the same equation the
-        shader uses — view source, it's ~200 lines.
+        shader uses. For the deeper renderer, this page's job is to provide known Schwarzschild
+        targets: straight rays in the flat limit, the 1.5 r<sub>s</sub> photon sphere, the
+        2.598 r<sub>s</sub> critical impact parameter, and the expected disk-lensing landmarks.
       </p>
-      <p><a href="/blackhole/">← back to the renderer</a> · <a href="/">all experiments</a></p>
+      <p>
+        <a href="/blackhole/">← back to the renderer</a> · <a href="/">all experiments</a> ·
+        <a href="/kerr/tutorial.html">next: spin and Kerr-Schild</a>
+      </p>
     </main>
     <script type="module" src="/src/tutorial/main.ts"></script>
   </body>

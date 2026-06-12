@@ -66,6 +66,8 @@ struct StepOutput {
 struct CompositeOutput {
   summary: vec4<f32>,
   color: vec4<f32>,
+  sky: vec4<f32>,
+  disk: vec4<f32>,
 };
 
 struct VolumeEmission {
@@ -112,6 +114,68 @@ fn ks_scalar(position: vec3<f32>, spin: f32, mass: f32) -> f32 {
   return 2.0 * mass * r2 * r / max(r2 * r2 + spin * spin * position.z * position.z, 1.0e-8);
 }
 
+fn ks_radius_gradient(position: vec3<f32>, spin: f32, radius: f32) -> vec3<f32> {
+  let safe_radius = max(radius, 1.0e-8);
+  if (abs(spin) < 1.0e-6) {
+    return position / safe_radius;
+  }
+
+  let radius2 = radius * radius;
+  let b = dot(position, position) - spin * spin;
+  let denominator = max(2.0 * radius2 - b, 1.0e-8);
+  return vec3<f32>(
+    radius * position.x / denominator,
+    radius * position.y / denominator,
+    position.z * (radius2 + spin * spin) / (safe_radius * denominator)
+  );
+}
+
+fn ks_scalar_gradient(
+  position: vec3<f32>,
+  spin: f32,
+  mass: f32,
+  radius: f32,
+  radius_gradient: vec3<f32>
+) -> vec3<f32> {
+  if (mass <= 0.0) {
+    return vec3<f32>(0.0);
+  }
+
+  let radius2 = radius * radius;
+  let radius3 = radius2 * radius;
+  let denominator = max(radius2 * radius2 + spin * spin * position.z * position.z, 1.0e-8);
+  let numerator = 2.0 * mass * radius3;
+  let numerator_gradient = 6.0 * mass * radius2 * radius_gradient;
+  let denominator_gradient =
+    4.0 * radius3 * radius_gradient +
+    vec3<f32>(0.0, 0.0, 2.0 * spin * spin * position.z);
+  return (numerator_gradient * denominator - numerator * denominator_gradient) / (denominator * denominator);
+}
+
+fn ks_l_derivative_dot(
+  position: vec3<f32>,
+  spin: f32,
+  radius: f32,
+  radius_derivative: f32,
+  basis: vec3<f32>,
+  spatial_momentum: vec3<f32>
+) -> f32 {
+  let radius2 = radius * radius;
+  let denominator = max(radius2 + spin * spin, 1.0e-8);
+  let denominator_derivative = 2.0 * radius * radius_derivative;
+  let denominator2 = denominator * denominator;
+
+  let nx = radius * position.x + spin * position.y;
+  let ny = radius * position.y - spin * position.x;
+  let dnx = radius_derivative * position.x + radius * basis.x + spin * basis.y;
+  let dny = radius_derivative * position.y + radius * basis.y - spin * basis.x;
+
+  let dlx = (dnx * denominator - nx * denominator_derivative) / denominator2;
+  let dly = (dny * denominator - ny * denominator_derivative) / denominator2;
+  let dlz = (basis.z * radius - position.z * radius_derivative) / max(radius2, 1.0e-8);
+  return dot(vec3<f32>(dlx, dly, dlz), spatial_momentum);
+}
+
 fn hamiltonian(position: vec3<f32>, momentum: vec4<f32>, spin: f32, mass: f32) -> f32 {
   let r = ks_radius(position, spin);
   let scalar = ks_scalar(position, spin, mass);
@@ -152,15 +216,21 @@ fn radial_coordinate_speed(position: vec3<f32>, momentum: vec4<f32>, spin: f32, 
 }
 
 fn gradient(position: vec3<f32>, momentum: vec4<f32>, spin: f32, mass: f32) -> vec3<f32> {
-  let radius = max(ks_radius(position, spin), 1.0);
-  let eps = 1.0e-5 * radius;
-  let ex = vec3<f32>(eps, 0.0, 0.0);
-  let ey = vec3<f32>(0.0, eps, 0.0);
-  let ez = vec3<f32>(0.0, 0.0, eps);
-  return vec3<f32>(
-    (hamiltonian(position + ex, momentum, spin, mass) - hamiltonian(position - ex, momentum, spin, mass)) / (2.0 * eps),
-    (hamiltonian(position + ey, momentum, spin, mass) - hamiltonian(position - ey, momentum, spin, mass)) / (2.0 * eps),
-    (hamiltonian(position + ez, momentum, spin, mass) - hamiltonian(position - ez, momentum, spin, mass)) / (2.0 * eps)
+  let radius = max(ks_radius(position, spin), 1.0e-8);
+  let scalar = ks_scalar(position, spin, mass);
+  let radius_grad = ks_radius_gradient(position, spin, radius);
+  let scalar_grad = ks_scalar_gradient(position, spin, mass, radius, radius_grad);
+  let spatial_momentum = momentum.yzw;
+  let l = ks_l(position, spin, radius);
+  let projected = -momentum.x + dot(l, spatial_momentum);
+  let projected_grad = vec3<f32>(
+    ks_l_derivative_dot(position, spin, radius, radius_grad.x, vec3<f32>(1.0, 0.0, 0.0), spatial_momentum),
+    ks_l_derivative_dot(position, spin, radius, radius_grad.y, vec3<f32>(0.0, 1.0, 0.0), spatial_momentum),
+    ks_l_derivative_dot(position, spin, radius, radius_grad.z, vec3<f32>(0.0, 0.0, 1.0), spatial_momentum)
+  );
+  return -0.5 * (
+    scalar_grad * (projected * projected) +
+    projected_grad * (2.0 * scalar * projected)
   );
 }
 
@@ -248,15 +318,50 @@ fn add_star(color: vec3<f32>, direction: vec3<f32>, star_direction: vec3<f32>, s
   return color + tint * strength;
 }
 
-fn escaped_background_color(direction: vec3<f32>) -> vec3<f32> {
+fn hash2(p: vec2<f32>) -> f32 {
+  return fract(sin(dot(p, vec2<f32>(127.1, 311.7))) * 43758.5453123);
+}
+
+fn value_noise(p: vec2<f32>) -> f32 {
+  let i = floor(p);
+  let f = fract(p);
+  let u = f * f * (3.0 - 2.0 * f);
+  let a = hash2(i);
+  let b = hash2(i + vec2<f32>(1.0, 0.0));
+  let c = hash2(i + vec2<f32>(0.0, 1.0));
+  let d = hash2(i + vec2<f32>(1.0, 1.0));
+  return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
+}
+
+fn procedural_stars(direction: vec3<f32>) -> vec3<f32> {
   let dir = normalize(direction);
-  let band_coordinate = abs(0.72 * dir.y + 0.24 * dir.x - 0.1 * dir.z);
-  let band = pow(max(1.0 - band_coordinate * 4.5, 0.0), 2.0);
+  let uv = vec2<f32>(
+    atan2(dir.y, dir.x) / 6.28318530718 + 0.5,
+    asin(clamp(dir.z, -1.0, 1.0)) / 3.14159265359 + 0.5
+  );
+  let grid = vec2<f32>(420.0, 210.0);
+  let p = uv * grid;
+  let cell = floor(p);
+  let local = fract(p) - vec2<f32>(0.5);
+  let rnd = hash2(cell);
+  let small_star = smoothstep(0.065, 0.0, length(local)) * step(0.992, rnd);
+  let bright_star = smoothstep(0.12, 0.0, length(local)) * step(0.9985, rnd);
+  let warm = 0.65 + 0.35 * hash2(cell + vec2<f32>(17.0, 43.0));
+  return small_star * vec3<f32>(0.65, 0.78, 1.0) * 0.65 +
+    bright_star * vec3<f32>(1.25, warm, 0.72) * 2.4;
+}
+
+fn legacy_background_color(direction: vec3<f32>) -> vec3<f32> {
+  let dir = normalize(direction);
+  let band_coordinate = abs(0.58 * dir.z + 0.34 * dir.y - 0.18 * dir.x);
+  let band_noise = 0.45 + 0.55 * value_noise(vec2<f32>(atan2(dir.y, dir.x) * 2.4, dir.z * 5.5));
+  let band = pow(max(1.0 - band_coordinate * 5.6, 0.0), 2.15) * band_noise;
   var color = vec3<f32>(
-    0.006 + 0.012 * max(dir.z, 0.0),
-    0.008 + 0.01 * max(dir.y, 0.0),
-    0.016 + 0.018 * max(-dir.z, 0.0)
-  ) + vec3<f32>(0.035, 0.032, 0.048) * band;
+    0.0025 + 0.006 * max(dir.z, 0.0),
+    0.004 + 0.006 * max(dir.y, 0.0),
+    0.011 + 0.018 * max(-dir.z, 0.0)
+  ) + vec3<f32>(0.055, 0.047, 0.035) * band;
+  color = color + procedural_stars(dir);
   color = add_star(color, dir, vec3<f32>(0.42, 0.16, 0.89), 220.0, vec3<f32>(1.9, 1.65, 1.2));
   color = add_star(color, dir, vec3<f32>(-0.68, -0.08, 0.73), 180.0, vec3<f32>(1.15, 1.35, 1.9));
   color = add_star(color, dir, vec3<f32>(0.09, 0.82, -0.56), 260.0, vec3<f32>(1.7, 1.45, 1.05));
@@ -290,7 +395,44 @@ fn observed_disk_rgb(position: vec3<f32>, momentum: vec4<f32>, observer_velocity
 }
 
 fn disk_scale_height(radius: f32) -> f32 {
-  return max(0.08, 0.04 * max(radius, 0.0));
+  return max(0.025, 0.015 * max(radius, 0.0));
+}
+
+fn adaptive_trace_step(
+  position: vec3<f32>,
+  momentum: vec4<f32>,
+  input: RaySample,
+  radius: f32,
+  horizon: f32
+) -> f32 {
+  let base_step = input.paramsA.y;
+  let spin = input.paramsA.x;
+  let mass = input.paramsB.y;
+  let singularity_radius = input.paramsA.w;
+  var step = base_step * clamp(radius, 0.8, 18.0);
+  step = min(step, 0.55);
+
+  if (horizon > 0.0) {
+    let horizon_distance = abs(radius - horizon);
+    let horizon_step = base_step + 0.32 * max(horizon_distance, 0.015);
+    step = min(step, horizon_step);
+  }
+
+  let singularity_distance = max(radius - singularity_radius, 0.01);
+  step = min(step, max(base_step * 0.5, 0.22 * singularity_distance));
+
+  let inner_radius = input.paramsC.x;
+  let outer_radius = input.paramsC.y;
+  if (radius >= inner_radius && radius <= outer_radius) {
+    let velocity = coordinate_velocity(position, momentum, spin, mass).yzw;
+    let vertical_speed = max(abs(velocity.z), 0.08);
+    let scale_height = disk_scale_height(radius);
+    let disk_distance = abs(position.z);
+    let disk_step = 0.42 * max(scale_height + disk_distance, scale_height) / vertical_speed;
+    step = min(step, clamp(disk_step, base_step * 0.75, 0.18));
+  }
+
+  return clamp(step, base_step * 0.5, 0.55);
 }
 
 fn disk_volume_emission(
@@ -315,7 +457,7 @@ fn disk_volume_emission(
     return VolumeEmission(vec3<f32>(0.0), 0.0, -1.0);
   }
 
-  let path_weight = density * max(path_step_size, 0.0) / (2.50662827463 * scale_height);
+  let path_weight = min(density * max(path_step_size, 0.0) / (2.50662827463 * scale_height), 0.018);
   let color = observed_disk_rgb(position, momentum, observer_velocity, input) * path_weight;
   return VolumeEmission(color, color.r + color.g + color.b, radius);
 }
@@ -325,14 +467,34 @@ fn diagnostic_color(status: f32, position: vec3<f32>, momentum: vec4<f32>, spin:
     return vec3<f32>(0.0, 0.0, 0.0);
   }
   if (status == 2.0) {
-    return vec3<f32>(0.3, 0.0, 0.5);
-  }
-  if (status == 3.0) {
-    return vec3<f32>(0.9, 0.1, 0.1);
+    return vec3<f32>(0.0, 0.0, 0.0);
   }
   let velocity = coordinate_velocity(position, momentum, spin, mass).yzw;
   let dir = normalize(velocity);
-  return escaped_background_color(dir);
+  return legacy_background_color(dir);
+}
+
+fn escaped_sky_direction(position: vec3<f32>, momentum: vec4<f32>, spin: f32, mass: f32) -> vec3<f32> {
+  return normalize(coordinate_velocity(position, momentum, spin, mass).yzw);
+}
+
+fn finish_composite(
+  status: f32,
+  steps: u32,
+  radius: f32,
+  disk_radius: f32,
+  readback_color: vec3<f32>,
+  display_disk_color: vec3<f32>,
+  max_drift: f32,
+  sky_direction: vec3<f32>,
+  sky_mix: f32
+) -> CompositeOutput {
+  return CompositeOutput(
+    vec4<f32>(status, f32(steps), radius, disk_radius),
+    vec4<f32>(readback_color, max_drift),
+    vec4<f32>(sky_direction, sky_mix),
+    vec4<f32>(display_disk_color, 0.0)
+  );
 }
 
 fn trace_composite(input: RaySample) -> CompositeOutput {
@@ -344,6 +506,7 @@ fn trace_composite(input: RaySample) -> CompositeOutput {
   let mass = input.paramsB.y;
   let horizon = horizon_radius(mass, spin);
   let h0 = hamiltonian(input.position.yzw, input.momentum, spin, mass);
+  let camera_inside_horizon = horizon > 0.0 && ks_radius(input.position.yzw, spin) <= horizon;
   var position = input.position;
   var momentum = input.momentum;
   var max_drift = 0.0;
@@ -356,27 +519,30 @@ fn trace_composite(input: RaySample) -> CompositeOutput {
     if (radius <= singularity_radius) {
       let rgb = diagnostic_color(2.0, position.yzw, momentum, spin, mass);
       if (brightest_disk_weight > 1.0e-8) {
-        return CompositeOutput(vec4<f32>(4.0, f32(steps), radius, brightest_disk_radius), vec4<f32>(accumulated_disk + rgb, max_drift));
+        return finish_composite(4.0, steps, radius, brightest_disk_radius, accumulated_disk + rgb, accumulated_disk + rgb, max_drift, vec3<f32>(0.0, 0.0, 1.0), 0.0);
       }
-      return CompositeOutput(vec4<f32>(2.0, f32(steps), radius, -1.0), vec4<f32>(rgb, max_drift));
+      return finish_composite(2.0, steps, radius, -1.0, rgb, rgb, max_drift, vec3<f32>(0.0, 0.0, 1.0), 0.0);
     }
-    if (horizon > 0.0 && radius <= horizon) {
+    if (!camera_inside_horizon && horizon > 0.0 && radius <= horizon) {
       let rgb = diagnostic_color(1.0, position.yzw, momentum, spin, mass);
       if (brightest_disk_weight > 1.0e-8) {
-        return CompositeOutput(vec4<f32>(4.0, f32(steps), radius, brightest_disk_radius), vec4<f32>(accumulated_disk + rgb, max_drift));
+        return finish_composite(4.0, steps, radius, brightest_disk_radius, accumulated_disk + rgb, accumulated_disk + rgb, max_drift, vec3<f32>(0.0, 0.0, 1.0), 0.0);
       }
-      return CompositeOutput(vec4<f32>(1.0, f32(steps), radius, -1.0), vec4<f32>(rgb, max_drift));
+      return finish_composite(1.0, steps, radius, -1.0, rgb, rgb, max_drift, vec3<f32>(0.0, 0.0, 1.0), 0.0);
     }
     if (radius >= escape_radius && radial_coordinate_speed(position.yzw, momentum, spin, mass) > 0.0) {
-      let rgb = diagnostic_color(0.0, position.yzw, momentum, spin, mass);
+      let sky_direction = escaped_sky_direction(position.yzw, momentum, spin, mass);
+      let sky_rgb = legacy_background_color(sky_direction);
       if (brightest_disk_weight > 1.0e-8) {
-        return CompositeOutput(vec4<f32>(4.0, f32(steps), radius, brightest_disk_radius), vec4<f32>(accumulated_disk + rgb, max_drift));
+        return finish_composite(4.0, steps, radius, brightest_disk_radius, accumulated_disk + sky_rgb, accumulated_disk, max_drift, sky_direction, 1.0);
       }
-      return CompositeOutput(vec4<f32>(0.0, f32(steps), radius, -1.0), vec4<f32>(rgb, max_drift));
+      return finish_composite(0.0, steps, radius, -1.0, sky_rgb, vec3<f32>(0.0), max_drift, sky_direction, 1.0);
     }
 
+    let adaptive_step = adaptive_trace_step(position.yzw, momentum, input, radius, horizon);
+
     if (steps % 2u == 0u) {
-      let emission = disk_volume_emission(position.yzw, momentum, input.observerVelocity, input, step_size * 2.0);
+      let emission = disk_volume_emission(position.yzw, momentum, input.observerVelocity, input, adaptive_step * 2.0);
       if (emission.weight > 0.0) {
         accumulated_disk = accumulated_disk + emission.color;
         if (emission.weight > brightest_disk_weight) {
@@ -386,18 +552,19 @@ fn trace_composite(input: RaySample) -> CompositeOutput {
       }
     }
 
-    let next = rk4(position, momentum, spin, mass, step_size);
+    let next = rk4(position, momentum, spin, mass, adaptive_step);
     position = next.position;
     momentum = next.momentum;
     max_drift = max(max_drift, abs(hamiltonian(position.yzw, momentum, spin, mass) - h0));
   }
 
   let radius = ks_radius(position.yzw, spin);
-  let rgb = diagnostic_color(3.0, position.yzw, momentum, spin, mass);
+  let sky_direction = escaped_sky_direction(position.yzw, momentum, spin, mass);
+  let sky_rgb = legacy_background_color(sky_direction);
   if (brightest_disk_weight > 1.0e-8) {
-    return CompositeOutput(vec4<f32>(4.0, f32(max_steps), radius, brightest_disk_radius), vec4<f32>(accumulated_disk + rgb, max_drift));
+    return finish_composite(4.0, max_steps, radius, brightest_disk_radius, accumulated_disk + sky_rgb, accumulated_disk, max_drift, sky_direction, 1.0);
   }
-  return CompositeOutput(vec4<f32>(3.0, f32(max_steps), radius, -1.0), vec4<f32>(rgb, max_drift));
+  return finish_composite(3.0, max_steps, radius, -1.0, sky_rgb, vec3<f32>(0.0), max_drift, sky_direction, 1.0);
 }
 
 @compute @workgroup_size(64)
@@ -410,11 +577,108 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
 }
 `;
 
+const CAMERA_COMPOSITE_BINDINGS = `
+struct CameraUniforms {
+  position: vec4<f32>,
+  observerVelocity: vec4<f32>,
+  eTime: vec4<f32>,
+  eRight: vec4<f32>,
+  eUp: vec4<f32>,
+  eForward: vec4<f32>,
+  paramsA: vec4<f32>,
+  paramsB: vec4<f32>,
+  paramsC: vec4<f32>,
+  paramsD: vec4<f32>,
+  reservedA: vec4<f32>,
+  reservedB: vec4<f32>,
+  reservedC: vec4<f32>,
+  reservedD: vec4<f32>,
+  reservedE: vec4<f32>,
+  reservedF: vec4<f32>,
+};
+
+@group(0) @binding(0) var<uniform> camera: CameraUniforms;
+@group(0) @binding(1) var<storage, read_write> outputData: array<CompositeOutput>;
+`;
+
+const CAMERA_COMPOSITE_MAIN = `
+fn lower_vector(position: vec3<f32>, spin: f32, mass: f32, vector: vec4<f32>) -> vec4<f32> {
+  let r = ks_radius(position, spin);
+  let scalar = ks_scalar(position, spin, mass);
+  let l = ks_l(position, spin, r);
+  let projected = vector.x + dot(l, vector.yzw);
+  return vec4<f32>(
+    -vector.x + scalar * projected,
+    vector.y + scalar * projected * l.x,
+    vector.z + scalar * projected * l.y,
+    vector.w + scalar * projected * l.z
+  );
+}
+
+fn camera_local_direction(pixel_index: u32) -> vec3<f32> {
+  let width = max(u32(camera.paramsB.z), 1u);
+  let height = max(u32(camera.paramsB.w), 1u);
+  let x = f32(pixel_index % width);
+  let y = f32(pixel_index / width);
+  let ndc_x = (2.0 * (x + 0.5) / f32(width) - 1.0) * camera.paramsD.w;
+  let ndc_y = 1.0 - 2.0 * (y + 0.5) / f32(height);
+  return normalize(vec3<f32>(ndc_x * camera.paramsD.z, ndc_y * camera.paramsD.z, 1.0));
+}
+
+fn camera_ray_sample(pixel_index: u32) -> RaySample {
+  let direction = camera_local_direction(pixel_index);
+  let contravariant =
+    camera.eTime +
+    camera.eRight * direction.x +
+    camera.eUp * direction.y +
+    camera.eForward * direction.z;
+  let momentum = lower_vector(camera.position.yzw, camera.paramsA.x, camera.paramsB.y, contravariant);
+  let trace_params_b = vec4<f32>(camera.paramsB.x, camera.paramsB.y, 0.0, 0.0);
+  let trace_params_d = vec4<f32>(camera.paramsD.x, camera.paramsD.y, camera.reservedA.x, 0.0);
+  return RaySample(
+    camera.position,
+    momentum,
+    camera.observerVelocity,
+    camera.paramsA,
+    trace_params_b,
+    camera.paramsC,
+    trace_params_d
+  );
+}
+
+@compute @workgroup_size(64)
+fn main(@builtin(global_invocation_id) id: vec3<u32>) {
+  let i = id.x;
+  if (i >= arrayLength(&outputData)) {
+    return;
+  }
+  outputData[i] = trace_composite(camera_ray_sample(i));
+}
+`;
+
+const CAMERA_COMPOSITE_SHADER = COMPOSITE_SHADER
+  .replace(
+    '@group(0) @binding(0) var<storage, read> samples: array<RaySample>;\n@group(0) @binding(1) var<storage, read_write> outputData: array<CompositeOutput>;',
+    CAMERA_COMPOSITE_BINDINGS.trim(),
+  )
+  .replace(
+    `@compute @workgroup_size(64)
+fn main(@builtin(global_invocation_id) id: vec3<u32>) {
+  let i = id.x;
+  if (i >= arrayLength(&outputData)) {
+    return;
+  }
+  outputData[i] = trace_composite(samples[i]);
+}`,
+    CAMERA_COMPOSITE_MAIN.trim(),
+  );
+
 const FLOAT_BYTES = Float32Array.BYTES_PER_ELEMENT;
 
 interface PipelineCache {
   camera?: GPUComputePipeline;
   composite?: GPUComputePipeline;
+  cameraComposite?: GPUComputePipeline;
   presentByFormat: Map<GPUTextureFormat, GPURenderPipeline>;
 }
 
@@ -428,10 +692,8 @@ interface CanvasRenderResources {
   context: GPUCanvasContext;
   uniformBuffer: GPUBuffer;
   renderUniformBuffer: GPUBuffer;
-  samples: GPUBuffer;
   output: GPUBuffer;
-  readback: GPUBuffer;
-  cameraBindGroup: GPUBindGroup;
+  readback?: GPUBuffer;
   compositeBindGroup: GPUBindGroup;
   presentBindGroup: GPUBindGroup;
 }
@@ -444,6 +706,8 @@ const PRESENT_SHADER = `
 struct CompositeOutput {
   summary: vec4<f32>,
   color: vec4<f32>,
+  sky: vec4<f32>,
+  disk: vec4<f32>,
 };
 
 struct RenderUniforms {
@@ -469,10 +733,85 @@ fn vertex_main(@builtin(vertex_index) vertex_index: u32) -> VertexOutput {
   return out;
 }
 
-fn display_map(value: f32) -> f32 {
-  let positive = max(value, 0.0);
-  let mapped = positive / (1.0 + positive);
-  return pow(mapped, 1.0 / 2.2);
+fn hash2(p: vec2<f32>) -> f32 {
+  return fract(sin(dot(p, vec2<f32>(127.1, 311.7))) * 43758.5453123);
+}
+
+fn hash3(p: vec3<f32>) -> vec3<f32> {
+  let q = vec3<f32>(
+    dot(p, vec3<f32>(127.1, 311.7, 74.7)),
+    dot(p, vec3<f32>(269.5, 183.3, 246.1)),
+    dot(p, vec3<f32>(113.5, 271.9, 124.6))
+  );
+  return fract(sin(q) * 43758.5453123);
+}
+
+fn value_noise(p: vec2<f32>) -> f32 {
+  let i = floor(p);
+  let f = fract(p);
+  let u = f * f * (3.0 - 2.0 * f);
+  let a = hash2(i);
+  let b = hash2(i + vec2<f32>(1.0, 0.0));
+  let c = hash2(i + vec2<f32>(0.0, 1.0));
+  let d = hash2(i + vec2<f32>(1.0, 1.0));
+  return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
+}
+
+fn fbm(p0: vec2<f32>) -> f32 {
+  var p = p0;
+  var amp = 0.5;
+  var sum = 0.0;
+  for (var i = 0u; i < 5u; i = i + 1u) {
+    sum = sum + amp * value_noise(p);
+    p = p * 2.07 + vec2<f32>(13.7, 7.1);
+    amp = amp * 0.5;
+  }
+  return sum;
+}
+
+fn blackbody_rgb_fast(temperature: f32) -> vec3<f32> {
+  let t = max(temperature, 400.0);
+  var color = vec3<f32>(
+    56100000.0 * pow(t, -1.5) + 148.0,
+    select(100.04 * log(t) - 623.6, 35200000.0 * pow(t, -1.5) + 184.0, t > 6500.0),
+    194.18 * log(t) - 1448.6
+  );
+  color = clamp(color, vec3<f32>(0.0), vec3<f32>(255.0)) / 255.0;
+  if (t < 1000.0) {
+    color = color * (t / 1000.0);
+  }
+  return color;
+}
+
+fn detailed_sky(direction: vec3<f32>) -> vec3<f32> {
+  let d = normalize(direction);
+  var color = vec3<f32>(0.0);
+
+  for (var layer = 0u; layer < 2u; layer = layer + 1u) {
+    let scale = select(22.0, 47.0, layer == 1u);
+    let q = d * scale;
+    let id = floor(q);
+    let h = hash3(id);
+    let star_position = id + 0.2 + 0.6 * h;
+    let dist = length(q - star_position);
+    let lit = step(0.82, hash3(id + vec3<f32>(17.0)).x);
+    let core = exp(-dist * dist * 220.0);
+    let temp = mix(2800.0, 14000.0, h.y * h.y);
+    let mag = 0.3 + 2.2 * h.z * h.z;
+    color = color + lit * core * mag * blackbody_rgb_fast(temp);
+  }
+
+  let band_normal = normalize(vec3<f32>(0.35, 0.2, 1.0));
+  let band = exp(-pow(dot(d, band_normal) * 3.2, 2.0));
+  let neb_uv1 = vec2<f32>(d.x + 0.37 * d.z, d.y - 0.21 * d.x) * 5.0;
+  let neb_uv2 = vec2<f32>(d.z - 0.31 * d.x, d.y + 0.27 * d.z) * 5.0;
+  let neb = 0.5 * fbm(neb_uv1 + vec2<f32>(3.7)) + 0.5 * fbm(neb_uv2 + vec2<f32>(11.1));
+  color = color + band * (0.012 + 0.05 * neb * neb) * vec3<f32>(0.55, 0.62, 0.85);
+  return color;
+}
+
+fn aces(color: vec3<f32>) -> vec3<f32> {
+  return clamp((color * (2.51 * color + vec3<f32>(0.03))) / (color * (2.43 * color + vec3<f32>(0.59)) + vec3<f32>(0.14)), vec3<f32>(0.0), vec3<f32>(1.0));
 }
 
 @fragment
@@ -482,8 +821,11 @@ fn fragment_main(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f3
   let x = min(u32(position.x), width - 1u);
   let y = min(u32(position.y), height - 1u);
   let index = y * width + x;
-  let rgb = outputData[index].color.xyz;
-  return vec4<f32>(display_map(rgb.r), display_map(rgb.g), display_map(rgb.b), 1.0);
+  let sample = outputData[index];
+  let sky_direction = normalize(select(vec3<f32>(0.0, 0.0, 1.0), sample.sky.xyz, sample.sky.w > 0.5));
+  let sky = detailed_sky(sky_direction) * sample.sky.w;
+  let rgb = aces((sky + sample.disk.xyz) * 1.35);
+  return vec4<f32>(pow(rgb, vec3<f32>(1.0 / 2.2)), 1.0);
 }
 `;
 
@@ -660,8 +1002,9 @@ export async function renderWebGpuCompositeFromCameraToCanvas(
   const constants = globalThis as typeof globalThis & WebGpuConstants;
   const usage = constants.GPUBufferUsage;
   const textureUsage = constants.GPUTextureUsage;
+  const shouldReadBack = canvasOptions.readback ?? false;
   const mapMode = constants.GPUMapMode;
-  if (!navigator.gpu || !usage || !textureUsage || !mapMode) {
+  if (!navigator.gpu || !usage || !textureUsage || (shouldReadBack && !mapMode)) {
     return { supported: false, message: 'WebGPU globals are unavailable' };
   }
 
@@ -670,23 +1013,19 @@ export async function renderWebGpuCompositeFromCameraToCanvas(
   if (!device) return { supported: false, message: 'No WebGPU adapter available' };
 
   const format = navigator.gpu.getPreferredCanvasFormat();
+  const limitCheck = validateCanvasRenderLimits(device, options);
+  if (limitCheck) return { supported: false, message: limitCheck };
+
   const resources = getCanvasRenderResources(canvas, device, format, options, usage, textureUsage);
   if (!resources) return { supported: false, message: 'Canvas WebGPU context is unavailable' };
 
   device.queue.writeBuffer(resources.uniformBuffer, 0, uniforms);
   device.queue.writeBuffer(resources.renderUniformBuffer, 0, new Float32Array([options.width, options.height, 0, 0]));
 
-  const cameraPipeline = getCameraPipeline(device);
-  const compositePipeline = getCompositePipeline(device);
+  const compositePipeline = getCameraCompositePipeline(device);
   const presentPipeline = getPresentPipeline(device, format);
 
   const encoder = device.createCommandEncoder();
-  const cameraPass = encoder.beginComputePass();
-  cameraPass.setPipeline(cameraPipeline);
-  cameraPass.setBindGroup(0, resources.cameraBindGroup);
-  cameraPass.dispatchWorkgroups(Math.ceil(resources.rayCount / 64));
-  cameraPass.end();
-
   const compositePass = encoder.beginComputePass();
   compositePass.setPipeline(compositePipeline);
   compositePass.setBindGroup(0, resources.compositeBindGroup);
@@ -708,9 +1047,9 @@ export async function renderWebGpuCompositeFromCameraToCanvas(
   renderPass.draw(3);
   renderPass.end();
 
-  const shouldReadBack = canvasOptions.readback ?? true;
   if (shouldReadBack) {
-    encoder.copyBufferToBuffer(resources.output, 0, resources.readback, 0, resources.outputByteLength);
+    const readback = getCanvasReadbackBuffer(resources, usage);
+    encoder.copyBufferToBuffer(resources.output, 0, readback, 0, resources.outputByteLength);
   }
   device.queue.submit([encoder.finish()]);
 
@@ -721,9 +1060,14 @@ export async function renderWebGpuCompositeFromCameraToCanvas(
     };
   }
 
-  await resources.readback.mapAsync(mapMode.READ);
-  const outputCopy = new Float32Array(resources.readback.getMappedRange().slice(0));
-  resources.readback.unmap();
+  const readback = resources.readback;
+  if (!readback || !mapMode) {
+    return { supported: false, message: 'WebGPU readback buffer is unavailable' };
+  }
+
+  await readback.mapAsync(mapMode.READ);
+  const outputCopy = new Float32Array(readback.getMappedRange().slice(0));
+  readback.unmap();
 
   return {
     supported: true,
@@ -763,7 +1107,6 @@ function getCanvasRenderResources(
   });
 
   const rayCount = options.width * options.height;
-  const sampleByteLength = rayCount * COMPOSITE_INPUT_FLOATS_PER_RAY * FLOAT_BYTES;
   const outputByteLength = rayCount * COMPOSITE_OUTPUT_FLOATS_PER_RAY * FLOAT_BYTES;
   const uniformBuffer = device.createBuffer({
     size: COMPOSITE_CAMERA_UNIFORM_FLOATS * FLOAT_BYTES,
@@ -773,20 +1116,11 @@ function getCanvasRenderResources(
     size: 4 * FLOAT_BYTES,
     usage: usage.UNIFORM | usage.COPY_DST,
   });
-  const samples = device.createBuffer({
-    size: sampleByteLength,
-    usage: usage.STORAGE,
-  });
   const output = device.createBuffer({
     size: outputByteLength,
     usage: usage.STORAGE | usage.COPY_SRC,
   });
-  const readback = device.createBuffer({
-    size: outputByteLength,
-    usage: usage.COPY_DST | usage.MAP_READ,
-  });
-  const cameraPipeline = getCameraPipeline(device);
-  const compositePipeline = getCompositePipeline(device);
+  const compositePipeline = getCameraCompositePipeline(device);
   const presentPipeline = getPresentPipeline(device, format);
   const resources: CanvasRenderResources = {
     device,
@@ -798,20 +1132,11 @@ function getCanvasRenderResources(
     context,
     uniformBuffer,
     renderUniformBuffer,
-    samples,
     output,
-    readback,
-    cameraBindGroup: device.createBindGroup({
-      layout: cameraPipeline.getBindGroupLayout(0),
-      entries: [
-        { binding: 0, resource: { buffer: uniformBuffer } },
-        { binding: 1, resource: { buffer: samples } },
-      ],
-    }),
     compositeBindGroup: device.createBindGroup({
       layout: compositePipeline.getBindGroupLayout(0),
       entries: [
-        { binding: 0, resource: { buffer: samples } },
+        { binding: 0, resource: { buffer: uniformBuffer } },
         { binding: 1, resource: { buffer: output } },
       ],
     }),
@@ -827,9 +1152,55 @@ function getCanvasRenderResources(
   return resources;
 }
 
+function validateCanvasRenderLimits(device: GPUDevice, options: CompositeCameraSampleOptions): string | null {
+  const rayCount = options.width * options.height;
+  const outputByteLength = rayCount * COMPOSITE_OUTPUT_FLOATS_PER_RAY * FLOAT_BYTES;
+  const storageLimit = device.limits.maxStorageBufferBindingSize;
+  const bufferLimit = device.limits.maxBufferSize;
+
+  if (outputByteLength > bufferLimit) {
+    return `render size ${options.width}x${options.height} needs ${formatBytes(outputByteLength)}, above this GPU buffer limit ${formatBytes(bufferLimit)}`;
+  }
+  if (outputByteLength > storageLimit) {
+    return `render size ${options.width}x${options.height} needs storage binding ${formatBytes(outputByteLength)}, above this GPU limit ${formatBytes(storageLimit)}`;
+  }
+  return null;
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes >= 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MiB`;
+  if (bytes >= 1024) return `${(bytes / 1024).toFixed(1)} KiB`;
+  return `${bytes} B`;
+}
+
+function getCanvasReadbackBuffer(
+  resources: CanvasRenderResources,
+  usage: NonNullable<WebGpuConstants['GPUBufferUsage']>,
+): GPUBuffer {
+  if (!resources.readback) {
+    resources.readback = resources.device.createBuffer({
+      size: resources.outputByteLength,
+      usage: usage.COPY_DST | usage.MAP_READ,
+    });
+  }
+  return resources.readback;
+}
+
 async function requestCachedDevice(): Promise<GPUDevice | null> {
   if (!cachedDevicePromise) {
-    cachedDevicePromise = navigator.gpu.requestAdapter().then((adapter) => adapter?.requestDevice() ?? null);
+    cachedDevicePromise = navigator.gpu.requestAdapter().then(async (adapter) => {
+      if (!adapter) return null;
+      const requiredLimits: Record<string, number> = {};
+      if (adapter.limits.maxStorageBufferBindingSize > 134_217_728) {
+        requiredLimits.maxStorageBufferBindingSize = adapter.limits.maxStorageBufferBindingSize;
+      }
+      if (adapter.limits.maxBufferSize > 268_435_456) {
+        requiredLimits.maxBufferSize = adapter.limits.maxBufferSize;
+      }
+      return adapter.requestDevice(
+        Object.keys(requiredLimits).length > 0 ? { requiredLimits } : undefined,
+      );
+    });
   }
   return cachedDevicePromise;
 }
@@ -865,6 +1236,18 @@ function getCompositePipeline(device: GPUDevice): GPUComputePipeline {
     });
   }
   return cache.composite;
+}
+
+function getCameraCompositePipeline(device: GPUDevice): GPUComputePipeline {
+  const cache = getPipelineCache(device);
+  if (!cache.cameraComposite) {
+    const module = device.createShaderModule({ code: CAMERA_COMPOSITE_SHADER });
+    cache.cameraComposite = device.createComputePipeline({
+      layout: 'auto',
+      compute: { module, entryPoint: 'main' },
+    });
+  }
+  return cache.cameraComposite;
 }
 
 function getPresentPipeline(device: GPUDevice, format: GPUTextureFormat): GPURenderPipeline {

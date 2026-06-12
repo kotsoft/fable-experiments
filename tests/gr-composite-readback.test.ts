@@ -29,6 +29,14 @@ describe('composite WebGPU readback schema', () => {
       0.5,
       0.25,
       1e-4,
+      0,
+      0,
+      1,
+      1,
+      1.25,
+      0.5,
+      0.25,
+      0,
     ]);
 
     const [row] = compositeOutputRows(output);
@@ -39,6 +47,9 @@ describe('composite WebGPU readback schema', () => {
     expect(row.diskRadius).toBe(5.5);
     expect(row.color).toEqual([1.25, 0.5, 0.25]);
     expect(row.drift).toBeCloseTo(1e-4);
+    expect(row.skyDirection).toEqual([0, 0, 1]);
+    expect(row.skyMix).toBe(1);
+    expect(row.diskColor).toEqual([1.25, 0.5, 0.25]);
   });
 
   it('compares numeric GPU output against CPU reference diagnostics', () => {
@@ -51,6 +62,14 @@ describe('composite WebGPU readback schema', () => {
       0.5,
       0.25,
       1e-4,
+      0,
+      0,
+      1,
+      1,
+      1,
+      0.5,
+      0.25,
+      0,
       ReadbackStatus.Horizon,
       20,
       1.4,
@@ -59,11 +78,19 @@ describe('composite WebGPU readback schema', () => {
       0,
       0,
       2e-4,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      0,
     ]);
     const output = new Float32Array(expected);
     output[4] += 0.01;
-    output[8] = ReadbackStatus.Escaped;
-    output[11] = 12;
+    output[16] = ReadbackStatus.Escaped;
+    output[19] = 12;
 
     const comparison = compareCompositeReadback(expected, output);
 

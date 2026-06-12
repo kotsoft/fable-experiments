@@ -1,4 +1,4 @@
-import type { PreviewPoint } from './physics';
+import { HORIZON_RADIUS, clampRadius, type PreviewPoint } from './physics';
 
 export interface MapPosition {
   x: number;
@@ -34,6 +34,8 @@ const SIZE = 280;
 const PAD = 18;
 const MAP_R = 18;
 const SCALE = (SIZE - PAD * 2) / (MAP_R * 2);
+const PHOTON_RING_R = 1.5;
+const DISK_INNER_R = 1.65;
 
 export function createMinimap(container: HTMLElement, callbacks: MinimapCallbacks): MinimapApi {
   const canvas = document.createElement('canvas');
@@ -60,9 +62,9 @@ export function createMinimap(container: HTMLElement, callbacks: MinimapCallback
     ctx.fillStyle = '#07080c';
     ctx.fillRect(0, 0, SIZE, SIZE);
     drawGrid(ctx);
-    drawRing(ctx, 3, '#4a3f2e', [5, 4]);
-    drawRing(ctx, 1.5, '#4d5361', [4, 5]);
-    drawRing(ctx, 1, '#000', []);
+    drawRing(ctx, DISK_INNER_R, '#4a3f2e', [5, 4]);
+    drawRing(ctx, PHOTON_RING_R, '#4d5361', [4, 5]);
+    drawRing(ctx, HORIZON_RADIUS, '#000', []);
 
     if (state.preview.length > 1) {
       ctx.beginPath();
@@ -92,7 +94,7 @@ export function createMinimap(container: HTMLElement, callbacks: MinimapCallback
     ctx.font = '11px ui-monospace, SFMono-Regular, Consolas, monospace';
     ctx.fillText('horizon', SIZE / 2 + 16, SIZE / 2 + 4);
     ctx.fillText('photon', SIZE / 2 + 24, SIZE / 2 - 18);
-    ctx.fillText('ISCO', SIZE / 2 + 44, SIZE / 2 - 43);
+    ctx.fillText('disk in', SIZE / 2 + 44, SIZE / 2 - 43);
   };
 
   const pointerPosition = (event: PointerEvent): MapPosition => {
@@ -102,7 +104,7 @@ export function createMinimap(container: HTMLElement, callbacks: MinimapCallback
     const wx = (px - SIZE / 2) / SCALE;
     const wz = -(py - SIZE / 2) / SCALE;
     const r = Math.hypot(wx, wz);
-    const clampedR = Math.max(1.08, Math.min(MAP_R, r || 1.08));
+    const clampedR = clampRadius(Math.min(MAP_R, r || HORIZON_RADIUS + 0.08));
     const s = clampedR / (r || 1);
     return { x: wx * s, z: wz * s, r: clampedR };
   };

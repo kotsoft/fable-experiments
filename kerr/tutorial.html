@@ -94,6 +94,12 @@
         all of this; use its slider to sweep the spin from 0 to nearly 1 and watch the features
         appear.
       </p>
+      <p class="note">
+        This page is the bridge from the teaching renderer to the production target from the
+        research pass: backward GR ray tracing in horizon-penetrating Kerr-Schild coordinates,
+        driven by observer tetrads and checked against analytic Kerr invariants. It does not repeat
+        the Schwarzschild tutorial's geodesic primer, disk-lensing explanation, or Doppler primer.
+      </p>
 
       <h2>1 — The Kerr metric</h2>
       <p>
@@ -108,9 +114,10 @@
       </p>
       <p>
         — from 2<var>M</var> at zero spin toward <var>M</var> at maximal spin. The renderer works
-        in <em>Kerr-Schild</em> coordinates, a Cartesian form of the metric with no coordinate
-        trouble at the poles or the horizon — much friendlier for a shader than the usual
-        textbook (Boyer-Lindquist) coordinates.
+        in <em>Kerr-Schild</em> coordinates, a Cartesian horizon-penetrating form of the metric.
+        That choice is not just shader convenience: the usual textbook Boyer-Lindquist coordinates
+        are excellent for exterior formulas but become singular at the horizon, exactly where an
+        infalling first-person renderer needs to keep going.
       </p>
 
       <details>
@@ -265,12 +272,62 @@ dp/dλ = −∂H/∂x     // central differences: 6 evaluations of H
         intensity.
       </p>
 
-      <h2>6 — Everything else carries over</h2>
+      <h2>6 — The full GRRT target</h2>
+      <p>
+        The deep-research recommendation is to make Kerr-Schild Hamiltonian integration the
+        central runtime engine, not a special effect layered on top of a Schwarzschild shader. In
+        general form, every ray carries a coordinate position and covariant momentum:
+      </p>
+      <p class="eq">
+        H = ½ g<sup>μν</sup>p<sub>μ</sub>p<sub>ν</sub> = 0, &nbsp;
+        dx<sup>μ</sup>/dλ = g<sup>μν</sup>p<sub>ν</sub>, &nbsp;
+        dp<sub>μ</sub>/dλ = -½ ∂<sub>μ</sub>g<sup>αβ</sup>p<sub>α</sub>p<sub>β</sub>
+      </p>
+      <p>
+        That single path can handle exterior lensing, horizon crossing, arbitrary observer motion,
+        disk intersections, and volumetric plasma. The current demo is a compact WebGL version of
+        that idea; a production version would move the same architecture to WebGPU and make the
+        disk/volume transport more explicit.
+      </p>
+      <pre><code>for each pixel:
+  build photon from observer tetrad
+  integrate null geodesic backward in Kerr-Schild coordinates
+  sample sky when escaped
+  root-refine optically thick disk crossings
+  accumulate optically thin volume emission/absorption
+  stop at escape, singularity cutoff, saturated opacity, or step budget</code></pre>
+      <p>
+        Constants-of-motion and analytic Kerr geodesics still matter, but mostly as reference
+        systems: use them for shadow-boundary checks, prograde/retrograde impact parameters, and
+        regression images. Precomputed ray maps can help fixed observer families, but they become
+        restrictive once the viewer is falling, turning their head, crossing the horizon, and
+        seeing time-dependent emitting matter.
+      </p>
+
+      <h2>7 — Validation layers</h2>
+      <p>
+        The research pass also changes how to judge the renderer. A realistic-looking image is not
+        enough; the engine needs layered physics checks:
+      </p>
+      <pre><code>flat limit:        M = 0 gives straight rays
+Schwarzschild:     a = 0 matches the baseline tutorial and shadow size
+Kerr exterior:     analytic rim, E, Lz, Carter-constant drift
+horizon crossing:  no coordinate blow-up or artificial black wall
+photon ring:       high-winding rays stay stable near the critical curve
+disk/volume:       redshift g, optical depth, and emitter four-velocity agree</code></pre>
+      <p>
+        The practical build order follows the same layering: CPU reference integrator first,
+        vacuum Kerr WebGPU second, then optically thick disk crossings, then optically thin volume,
+        then image and performance validation against reference GRRT outputs.
+      </p>
+
+      <h2>8 — Everything else carries over</h2>
       <p>
         The volumetric disk texture, blackbody coloring, lensed starfield, and ACES tonemap are
         identical to the <a href="/blackhole/tutorial.html">non-rotating renderer</a>, which
-        covers them in detail. The only genuinely new ingredients on this page are the metric, the
-        integrator, and the geography of orbits around it.
+        covers those visual ingredients in detail. The new ingredients on this page are the metric,
+        the horizon-safe Hamiltonian integrator, the geography of Kerr orbits, and the validation
+        strategy that keeps the renderer honest.
       </p>
       <p class="note">
         The figures on this page are dynamically generated SVG, computed from the exact formulas

@@ -1,3 +1,22 @@
+import {
+  coordinateVelocity,
+  hamiltonian,
+  stepNullGeodesic,
+  type GeodesicState,
+} from '../gr/geodesic';
+import {
+  horizonRadius,
+  kerrSchildParams,
+  kerrSchildNullSpatial,
+  kerrSchildRadius,
+  lowerVector,
+  metricDot,
+  type KerrSchildParams,
+  type Vec3,
+  type Vec4,
+} from '../gr/kerrSchild';
+import { buildObserverTetrad, staticObserverFourVelocity } from '../gr/tetrad';
+
 export interface FallState {
   r: number;
   phi: number;
@@ -6,6 +25,8 @@ export interface FallState {
   energy: number;
   angularMomentum: number;
   radialSign: number;
+  position: Vec4;
+  momentum: Vec4;
 }
 
 export interface LocalLaunch {
@@ -29,170 +50,219 @@ export interface LocalVelocity {
   speed: number;
 }
 
-const HORIZON = 1.0;
-const SINGULARITY_CUTOFF = 0.08;
+export const FALL_PARAMS: KerrSchildParams = kerrSchildParams(0.35, 0.5);
+export const HORIZON_RADIUS = horizonRadius(FALL_PARAMS);
+export const SINGULARITY_CUTOFF = 0.045;
 
 export function clampRadius(r: number): number {
-  return Math.max(1.08, Math.min(18, r));
+  return Math.max(HORIZON_RADIUS + 0.08, Math.min(18, r));
 }
 
 export function positionFromState(state: FallState): PreviewPoint {
   return {
-    x: state.r * Math.cos(state.phi),
-    z: state.r * Math.sin(state.phi),
+    x: state.position.x,
+    z: state.position.y,
     r: state.r,
   };
 }
 
-export function launchFromLocal(local: LocalLaunch): FallState {
-  const r = clampRadius(local.r);
-  const f = schwarzschildF(r);
-  const betaRadial = Math.max(-0.85, Math.min(0.85, local.betaRadial));
-  const betaTangential = Math.max(-0.85, Math.min(0.85, local.betaTangential));
-  const beta2 = Math.min(betaRadial * betaRadial + betaTangential * betaTangential, 0.85 * 0.85);
-  const gamma = 1 / Math.sqrt(1 - beta2);
+export function spatialPositionFromState(state: FallState): Vec3 {
   return {
-    r,
-    phi: local.phi,
-    tau: 0,
-    t: 0,
-    energy: gamma * Math.sqrt(f),
-    angularMomentum: r * gamma * betaTangential,
-    radialSign: Math.abs(betaRadial) < 1e-6 ? -1 : Math.sign(betaRadial),
+    x: state.position.x,
+    y: state.position.y,
+    z: state.position.z,
   };
 }
 
+export function fourVelocityFromState(state: FallState): Vec4 {
+  return coordinateVelocity(state.position, state.momentum, FALL_PARAMS);
+}
+
+export function launchFromLocal(local: LocalLaunch): FallState {
+  const r = clampRadius(local.r);
+  const phi = local.phi;
+  const position = { t: 0, x: r * Math.cos(phi), y: r * Math.sin(phi), z: 0 };
+  const betaRadial = clamp(local.betaRadial, -0.88, 0.88);
+  const betaTangential = clamp(local.betaTangential, -0.88, 0.88);
+  const beta2 = Math.min(betaRadial * betaRadial + betaTangential * betaTangential, 0.88 * 0.88);
+  const betaScale = beta2 > 0 ? Math.sqrt(beta2) / Math.hypot(betaRadial, betaTangential) : 1;
+  const radial = normalize3({ x: Math.cos(phi), y: Math.sin(phi), z: 0 });
+  const tangent = { x: -Math.sin(phi), y: Math.cos(phi), z: 0 };
+  const referenceVelocity = referenceObserverFourVelocity(position);
+  const referenceFrame = buildObserverTetrad(position, FALL_PARAMS, referenceVelocity, {
+    forward: { t: 0, ...radial },
+    right: { t: 0, ...tangent },
+    up: { t: 0, x: 0, y: 0, z: 1 },
+  });
+  const gamma = 1 / Math.sqrt(1 - beta2);
+  const fourVelocity = scaleVec4(
+    addVec4(
+      referenceFrame.eTime,
+      addVec4(
+        scaleVec4(referenceFrame.eForward, betaRadial * betaScale),
+        scaleVec4(referenceFrame.eRight, betaTangential * betaScale),
+      ),
+    ),
+    gamma,
+  );
+  const momentum = lowerVector(position, FALL_PARAMS, fourVelocity);
+
+  return stateFromGeodesic({ position, momentum }, 0, Math.abs(betaRadial) < 1e-6 ? -1 : Math.sign(betaRadial));
+}
+
 export function stepFall(state: FallState, dTau: number): FallState {
-  let next = { ...state };
-  const steps = Math.max(1, Math.ceil(Math.abs(dTau) / 0.006));
+  let next = { ...state, position: { ...state.position }, momentum: { ...state.momentum } };
+  const steps = Math.max(1, Math.ceil(Math.abs(dTau) / 0.004));
   const h = dTau / steps;
   for (let i = 0; i < steps; i++) {
-    if (next.r <= SINGULARITY_CUTOFF) return { ...next, r: SINGULARITY_CUTOFF };
-    next = rk4Step(next, h);
+    if (kerrSchildRadius(spatialPosition(next.position), FALL_PARAMS) <= SINGULARITY_CUTOFF) {
+      return clampToSingularity(next);
+    }
+    const geodesic = stepNullGeodesic(next, FALL_PARAMS, h);
+    if (kerrSchildRadius(spatialPosition(geodesic.position), FALL_PARAMS) <= SINGULARITY_CUTOFF) {
+      return clampToSingularity(next);
+    }
+    next = stateFromGeodesic(geodesic, next.tau + h, radialSignFromState(geodesic));
   }
   return next;
 }
 
 export function previewFall(state: FallState, maxTau: number): PreviewPoint[] {
   const pts: PreviewPoint[] = [positionFromState(state)];
-  let s = { ...state };
-  const step = 0.04;
+  let s = { ...state, position: { ...state.position }, momentum: { ...state.momentum } };
+  const step = 0.035;
   const samples = Math.ceil(maxTau / step);
   for (let i = 0; i < samples; i++) {
     s = stepFall(s, step);
     if (i % 2 === 0) pts.push(positionFromState(s));
-    if (s.r <= SINGULARITY_CUTOFF || s.r > 18.5) break;
+    if (isSingularityReached(s) || s.r > 18.5) break;
   }
   pts.push(positionFromState(s));
   return pts;
 }
 
 export function localVelocity(state: FallState): LocalVelocity {
-  if (state.r < HORIZON) return interiorVelocity(state);
-  const f = Math.max(schwarzschildF(state.r), 1e-5);
-  const radialSq = radialPotential(state.r, state.energy, state.angularMomentum);
-  const dr = state.radialSign * Math.sqrt(Math.max(radialSq, 0));
-  const betaRadial = dr / Math.max(state.energy, 1e-5);
-  const betaTangential = (state.angularMomentum / state.r) * Math.sqrt(f) / Math.max(state.energy, 1e-5);
-  const erx = Math.cos(state.phi), erz = Math.sin(state.phi);
-  const epx = -Math.sin(state.phi), epz = Math.cos(state.phi);
-  const x = betaRadial * erx + betaTangential * epx;
-  const z = betaRadial * erz + betaTangential * epz;
+  const position = spatialPosition(state.position);
+  const u = fourVelocityFromState(state);
+  let speed = 0.995;
+  if (state.r > HORIZON_RADIUS + 0.04) {
+    const referenceVelocity = referenceObserverFourVelocity(position);
+    const gamma = Math.max(-metricDot(position, FALL_PARAMS, u, referenceVelocity), 1);
+    speed = Math.sqrt(Math.max(0, 1 - 1 / (gamma * gamma)));
+  }
+
+  const v = coordinateVelocity(state.position, state.momentum, FALL_PARAMS);
+  const spatial = normalize3({ x: v.x, y: v.y, z: 0 });
+  const radial = normalize3({ x: state.position.x, y: state.position.y, z: 0 });
+  const tangent = { x: -radial.y, y: radial.x, z: 0 };
+  const betaRadial = speed * dot3(spatial, radial);
+  const betaTangential = speed * dot3(spatial, tangent);
   return {
     betaRadial,
     betaTangential,
-    x,
-    z,
-    speed: Math.hypot(x, z),
+    x: betaRadial * radial.x + betaTangential * tangent.x,
+    z: betaRadial * radial.y + betaTangential * tangent.y,
+    speed,
   };
 }
 
 export function isHorizonCrossed(state: FallState): boolean {
-  return state.r <= 1.01;
+  return state.r <= HORIZON_RADIUS + 0.01;
 }
 
 export function isSingularityReached(state: FallState): boolean {
   return state.r <= SINGULARITY_CUTOFF + 0.002;
 }
 
-function schwarzschildF(r: number): number {
-  return 1 - HORIZON / Math.max(r, SINGULARITY_CUTOFF);
+export function timelikeResidual(state: FallState): number {
+  return Math.abs(hamiltonian(state, FALL_PARAMS) + 0.5);
 }
 
-function radialPotential(r: number, energy: number, angularMomentum: number): number {
-  const f = schwarzschildF(Math.max(r, SINGULARITY_CUTOFF));
-  return energy * energy - f * (1 + angularMomentum * angularMomentum / (r * r));
-}
-
-function deriv(state: FallState): Pick<FallState, 'r' | 'phi' | 't'> {
-  const f = schwarzschildF(Math.max(state.r, SINGULARITY_CUTOFF));
-  let radialSq = radialPotential(state.r, state.energy, state.angularMomentum);
-  let sign = state.radialSign;
-  if (radialSq < 1e-8 && sign > 0) {
-    sign = -1;
-    radialSq = 0;
-  } else if (radialSq < 1e-10 && sign < 0) {
-    radialSq = 1e-10;
-  }
+function stateFromGeodesic(geodesic: GeodesicState, tau: number, radialSign: number): FallState {
+  const position = geodesic.position;
+  const momentum = geodesic.momentum;
+  const r = kerrSchildRadius(spatialPosition(position), FALL_PARAMS);
+  const phi = Math.atan2(position.y, position.x);
   return {
-    r: sign * Math.sqrt(Math.max(radialSq, 0)),
-    phi: state.angularMomentum / (state.r * state.r),
-    t: state.r > HORIZON ? state.energy / Math.max(f, 1e-8) : 0,
-  };
-}
-
-function rk4Step(state: FallState, h: number): FallState {
-  const k1 = deriv(state);
-  const s2 = offsetState(state, k1, h * 0.5);
-  const k2 = deriv(s2);
-  const s3 = offsetState(state, k2, h * 0.5);
-  const k3 = deriv(s3);
-  const s4 = offsetState(state, k3, h);
-  const k4 = deriv(s4);
-  const r = state.r + h / 6 * (k1.r + 2 * k2.r + 2 * k3.r + k4.r);
-  const phi = state.phi + h / 6 * (k1.phi + 2 * k2.phi + 2 * k3.phi + k4.phi);
-  const t = state.t + h / 6 * (k1.t + 2 * k2.t + 2 * k3.t + k4.t);
-  const radialSq = radialPotential(Math.max(r, SINGULARITY_CUTOFF), state.energy, state.angularMomentum);
-  const radialSign = radialSq < 1e-8 && state.radialSign > 0 ? -1 : state.radialSign;
-  return {
-    ...state,
-    r: Math.max(r, SINGULARITY_CUTOFF),
+    r,
     phi,
-    t,
-    tau: state.tau + h,
+    tau,
+    t: position.t,
+    energy: -momentum.t,
+    angularMomentum: position.x * momentum.y - position.y * momentum.x,
     radialSign,
+    position,
+    momentum,
   };
 }
 
-function offsetState(
-  state: FallState,
-  k: Pick<FallState, 'r' | 'phi' | 't'>,
-  h: number,
-): FallState {
-  return {
-    ...state,
-    r: Math.max(state.r + k.r * h, SINGULARITY_CUTOFF),
-    phi: state.phi + k.phi * h,
-    t: state.t + k.t * h,
-    tau: state.tau + h,
-  };
+function radialSignFromState(state: GeodesicState): number {
+  const v = coordinateVelocity(state.position, state.momentum, FALL_PARAMS);
+  const p = spatialPosition(state.position);
+  const radial = dot3(p, { x: v.x, y: v.y, z: v.z });
+  return radial >= 0 ? 1 : -1;
 }
 
-function interiorVelocity(state: FallState): LocalVelocity {
-  const erx = Math.cos(state.phi), erz = Math.sin(state.phi);
-  const epx = -Math.sin(state.phi), epz = Math.cos(state.phi);
-  const inward = Math.min(0.995, 0.82 + (1 - state.r) * 0.22);
-  const swirl = Math.max(-0.35, Math.min(0.35, state.angularMomentum / Math.max(state.r * 8, 0.5)));
-  const scale = Math.min(0.995 / Math.hypot(inward, swirl), 1);
-  const betaRadial = -inward * scale;
-  const betaTangential = swirl * scale;
-  const x = betaRadial * erx + betaTangential * epx;
-  const z = betaRadial * erz + betaTangential * epz;
-  return {
-    betaRadial,
-    betaTangential,
-    x,
-    z,
-    speed: Math.hypot(x, z),
-  };
+function clampToSingularity(state: FallState): FallState {
+  const p = spatialPosition(state.position);
+  const len = Math.hypot(p.x, p.y, p.z) || 1;
+  return stateFromGeodesic(
+    {
+      position: {
+        ...state.position,
+        x: (p.x / len) * SINGULARITY_CUTOFF,
+        y: (p.y / len) * SINGULARITY_CUTOFF,
+        z: (p.z / len) * SINGULARITY_CUTOFF,
+      },
+      momentum: state.momentum,
+    },
+    state.tau,
+    state.radialSign,
+  );
+}
+
+function spatialPosition(position: Vec4): Vec3 {
+  return { x: position.x, y: position.y, z: position.z };
+}
+
+function referenceObserverFourVelocity(position: Vec3): Vec4 {
+  try {
+    return staticObserverFourVelocity(position, FALL_PARAMS);
+  } catch {
+    return infallingKerrSchildObserver(position);
+  }
+}
+
+function infallingKerrSchildObserver(position: Vec3): Vec4 {
+  const l = kerrSchildNullSpatial(position, FALL_PARAMS);
+  for (const epsilon of [0.25, 0.1, 0.04, 0.015, 0.006, 0.002]) {
+    const inward = 1 - epsilon;
+    const candidate = { t: 1, x: -inward * l.x, y: -inward * l.y, z: -inward * l.z };
+    const norm = metricDot(position, FALL_PARAMS, candidate, candidate);
+    if (norm < -1e-10) {
+      return scaleVec4(candidate, 1 / Math.sqrt(-norm));
+    }
+  }
+  throw new Error('Could not construct a timelike Kerr-Schild reference observer');
+}
+
+function normalize3(v: Vec3): Vec3 {
+  const len = Math.hypot(v.x, v.y, v.z) || 1;
+  return { x: v.x / len, y: v.y / len, z: v.z / len };
+}
+
+function dot3(a: Vec3, b: Vec3): number {
+  return a.x * b.x + a.y * b.y + a.z * b.z;
+}
+
+function addVec4(a: Vec4, b: Vec4): Vec4 {
+  return { t: a.t + b.t, x: a.x + b.x, y: a.y + b.y, z: a.z + b.z };
+}
+
+function scaleVec4(v: Vec4, scale: number): Vec4 {
+  return { t: v.t * scale, x: v.x * scale, y: v.y * scale, z: v.z * scale };
+}
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, value));
 }

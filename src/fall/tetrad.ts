@@ -1,24 +1,16 @@
-import { localVelocity, type FallState } from './physics';
+import { metricDot, type Vec3, type Vec4 } from '../gr/kerrSchild';
+import { buildObserverTetrad, tetradResidual as grTetradResidual, type GrTetrad } from '../gr/tetrad';
+import {
+  FALL_PARAMS,
+  fourVelocityFromState,
+  localVelocity,
+  spatialPositionFromState,
+  type FallState,
+} from './physics';
 
-export interface Vec3 {
-  x: number;
-  y: number;
-  z: number;
-}
+export type { Vec3, Vec4 };
 
-export interface Vec4 {
-  t: number;
-  x: number;
-  y: number;
-  z: number;
-}
-
-export interface Tetrad {
-  eTime: Vec4;
-  eRight: Vec4;
-  eUp: Vec4;
-  eForward: Vec4;
-}
+export type Tetrad = GrTetrad;
 
 export interface PlayerCamera {
   yaw: number;
@@ -31,6 +23,7 @@ export interface ObserverFrame {
   beta: Vec3;
   speed: number;
   flatForward: { x: number; z: number };
+  fourVelocity: Vec4;
 }
 
 const MAX_PITCH = 1.35;
@@ -57,65 +50,53 @@ export function cameraFlatForward(camera: PlayerCamera): { x: number; z: number 
 }
 
 export function observerFrameFromState(state: FallState, camera: PlayerCamera): ObserverFrame {
-  const velocity = localVelocity(state);
-  const beta = { x: velocity.x, y: 0, z: velocity.z };
-  const localBasis = cameraLocalBasis(camera);
+  const position = spatialPositionFromState(state);
+  const fourVelocity = fourVelocityFromState(state);
+  const local = localVelocity(state);
+  const hints = cameraAxisHints(camera);
+  const tetrad = buildObserverTetrad(position, FALL_PARAMS, fourVelocity, hints);
   return {
-    tetrad: boostTetrad(beta, localBasis),
-    beta,
-    speed: velocity.speed,
+    tetrad,
+    beta: { x: local.x, y: local.z, z: 0 },
+    speed: local.speed,
     flatForward: cameraFlatForward(camera),
+    fourVelocity,
   };
 }
 
-export function minkowskiDot(a: Vec4, b: Vec4): number {
-  return -a.t * b.t + a.x * b.x + a.y * b.y + a.z * b.z;
+export function tetradResidual(tetrad: Tetrad, state?: FallState): number {
+  if (!state) {
+    return flatTetradResidual(tetrad);
+  }
+  return grTetradResidual(spatialPositionFromState(state), FALL_PARAMS, tetrad);
 }
 
-export function tetradResidual(tetrad: Tetrad): number {
+function cameraAxisHints(camera: PlayerCamera): { right: Vec4; up: Vec4; forward: Vec4 } {
+  const cp = Math.cos(camera.pitch);
+  const sp = Math.sin(camera.pitch);
+  const flat = cameraFlatForward(camera);
+  const forward = normalize3({ x: flat.x * cp, y: flat.z * cp, z: sp });
+  const right = normalize3({ x: flat.z, y: -flat.x, z: 0 });
+  const up = normalize3(cross(right, forward));
+  return {
+    forward: { t: 0, ...forward },
+    right: { t: 0, ...right },
+    up: { t: 0, ...up },
+  };
+}
+
+function flatTetradResidual(tetrad: Tetrad): number {
+  const position = { x: 20, y: 0, z: 0 };
   const axes = [tetrad.eTime, tetrad.eRight, tetrad.eUp, tetrad.eForward];
   const expected = [-1, 1, 1, 1];
   let residual = 0;
   for (let i = 0; i < axes.length; i++) {
-    residual = Math.max(residual, Math.abs(minkowskiDot(axes[i], axes[i]) - expected[i]));
+    residual = Math.max(residual, Math.abs(metricDot(position, { mass: 0, spin: 0 }, axes[i], axes[i]) - expected[i]));
     for (let j = i + 1; j < axes.length; j++) {
-      residual = Math.max(residual, Math.abs(minkowskiDot(axes[i], axes[j])));
+      residual = Math.max(residual, Math.abs(metricDot(position, { mass: 0, spin: 0 }, axes[i], axes[j])));
     }
   }
   return residual;
-}
-
-function cameraLocalBasis(camera: PlayerCamera): { right: Vec3; up: Vec3; forward: Vec3 } {
-  const cp = Math.cos(camera.pitch);
-  const sp = Math.sin(camera.pitch);
-  const flat = cameraFlatForward(camera);
-  const forward = normalize3({ x: flat.x * cp, y: sp, z: flat.z * cp });
-  const right = normalize3({ x: flat.z, y: 0, z: -flat.x });
-  const up = normalize3(cross(right, forward));
-  return { right, up, forward };
-}
-
-function boostTetrad(beta: Vec3, basis: { right: Vec3; up: Vec3; forward: Vec3 }): Tetrad {
-  const b2 = dot3(beta, beta);
-  const gamma = 1 / Math.sqrt(Math.max(1 - b2, 1e-5));
-  return {
-    eTime: { t: gamma, x: gamma * beta.x, y: gamma * beta.y, z: gamma * beta.z },
-    eRight: boostSpatialAxis(basis.right, beta, gamma, b2),
-    eUp: boostSpatialAxis(basis.up, beta, gamma, b2),
-    eForward: boostSpatialAxis(basis.forward, beta, gamma, b2),
-  };
-}
-
-function boostSpatialAxis(axis: Vec3, beta: Vec3, gamma: number, b2: number): Vec4 {
-  if (b2 < 1e-10) return { t: 0, x: axis.x, y: axis.y, z: axis.z };
-  const bd = dot3(beta, axis);
-  const scale = ((gamma - 1) * bd) / b2;
-  return {
-    t: gamma * bd,
-    x: axis.x + scale * beta.x,
-    y: axis.y + scale * beta.y,
-    z: axis.z + scale * beta.z,
-  };
 }
 
 function normalize2(x: number, z: number): { x: number; z: number } {
@@ -134,10 +115,6 @@ function cross(a: Vec3, b: Vec3): Vec3 {
     y: a.z * b.x - a.x * b.z,
     z: a.x * b.y - a.y * b.x,
   };
-}
-
-function dot3(a: Vec3, b: Vec3): number {
-  return a.x * b.x + a.y * b.y + a.z * b.z;
 }
 
 function clamp(value: number, min: number, max: number): number {

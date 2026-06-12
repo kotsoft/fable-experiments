@@ -1,15 +1,20 @@
-import { createFullscreenCanvas, createProgram, resizeCanvasToDisplaySize, uniforms } from '../common/webgl';
+import { type CompositeCameraSampleOptions } from '../gr/compositeSamples';
+import { renderWebGpuCompositeFromCameraToCanvas } from '../gr-demo/webgpuCompositeProbe';
 import { createMinimap, type MapPosition, type MapVector } from './minimap';
 import {
+  FALL_PARAMS,
+  HORIZON_RADIUS,
+  SINGULARITY_CUTOFF,
   isHorizonCrossed,
   isSingularityReached,
   launchFromLocal,
   positionFromState,
   previewFall,
+  spatialPositionFromState,
   stepFall,
+  timelikeResidual,
   type FallState,
 } from './physics';
-import { FRAG_SRC, VERT_SRC } from './shaders';
 import {
   cameraFlatForward,
   createPlayerCamera,
@@ -17,53 +22,53 @@ import {
   rotatePlayerCamera,
   setCameraLookDirection,
   tetradResidual,
-  type Vec4,
 } from './tetrad';
 
-const canvas = createFullscreenCanvas('grab');
-const maybeGl = canvas.getContext('webgl2');
-if (!maybeGl) throw new Error('WebGL2 not supported');
-const gl: WebGL2RenderingContext = maybeGl;
-
-const prog = createProgram(gl, VERT_SRC, FRAG_SRC);
-const U = uniforms(gl, prog);
-const uRes = U('uRes');
-const uTime = U('uTime');
-const uObserverPos = U('uObserverPos');
-const uTetradTime = U('uTetradTime');
-const uTetradRight = U('uTetradRight');
-const uTetradUp = U('uTetradUp');
-const uTetradForward = U('uTetradForward');
-const uObserverBeta = U('uObserverBeta');
-const uInterior = U('uInterior');
-const uSingularityFade = U('uSingularityFade');
-const uDiskEnabled = U('uDiskEnabled');
+const canvas = document.createElement('canvas');
+canvas.style.cssText =
+  'position:fixed;inset:0;width:100vw;height:100vh;display:block;background:#000;cursor:grab;' +
+  'touch-action:none;user-select:none;';
+document.body.style.margin = '0';
+document.body.style.background = '#000';
+document.body.appendChild(canvas);
 
 const panel = document.createElement('section');
 panel.style.cssText =
   'position:fixed;right:14px;bottom:14px;display:grid;gap:8px;color:#c9cdd6;' +
-  'font:12px ui-monospace,SFMono-Regular,Consolas,monospace;user-select:none;';
+  'font:12px ui-monospace,SFMono-Regular,Consolas,monospace;user-select:none;z-index:2;';
 document.body.appendChild(panel);
 
 const readout = document.createElement('div');
 readout.style.cssText =
   'background:#080910cc;border:1px solid #23262e;border-radius:6px;padding:9px 10px;' +
-  'backdrop-filter:blur(6px);line-height:1.55;min-width:258px;';
+  'backdrop-filter:blur(6px);line-height:1.55;min-width:286px;max-width:360px;';
 panel.appendChild(readout);
 
-const controls = document.createElement('label');
+const controls = document.createElement('div');
 controls.style.cssText =
   'background:#080910cc;border:1px solid #23262e;border-radius:6px;padding:8px 10px;' +
-  'display:flex;gap:8px;align-items:center;backdrop-filter:blur(6px);';
-const diskToggle = document.createElement('input');
-diskToggle.type = 'checkbox';
-diskToggle.checked = true;
-diskToggle.style.cssText = 'accent-color:#e8b873;';
-const diskText = document.createElement('span');
-diskText.textContent = 'accretion disk';
-controls.appendChild(diskToggle);
-controls.appendChild(diskText);
+  'display:grid;gap:8px;backdrop-filter:blur(6px);';
 panel.appendChild(controls);
+
+const diskToggle = labeledCheckbox('accretion disk', true);
+controls.appendChild(diskToggle.label);
+
+const qualitySelect = document.createElement('select');
+qualitySelect.style.cssText =
+  'background:#171a22;color:#e6eaf4;border:1px solid #3b4150;border-radius:5px;padding:5px;font:12px ui-monospace,monospace;';
+[
+  ['interactive', '320x180'],
+  ['balanced', '480x270'],
+  ['detail', '640x360'],
+  ['native window', 'native'],
+].forEach(([label, value]) => {
+  const option = document.createElement('option');
+  option.textContent = label;
+  option.value = value;
+  if (value === '320x180') option.selected = true;
+  qualitySelect.appendChild(option);
+});
+controls.appendChild(labeledControl('render', qualitySelect));
 
 const mapBox = document.createElement('div');
 mapBox.style.cssText =
@@ -71,7 +76,8 @@ mapBox.style.cssText =
   'box-shadow:0 10px 30px #0008;';
 panel.appendChild(mapBox);
 
-let state: FallState = launchFromLocal({ r: 12, phi: 0, betaRadial: 0, betaTangential: 0 });
+let state: FallState = launchFromLocal({ r: 12, phi: 0, betaRadial: 0, betaTangential: 0.08 });
+let lastRenderableState: FallState = state;
 let running = true;
 let crossed = false;
 let singularityReached = false;
@@ -81,6 +87,10 @@ let lastFrame = performance.now() / 1000;
 let looking = false;
 let lastLookX = 0;
 let lastLookY = 0;
+let renderInFlight = false;
+let pendingRender = false;
+let renderMessage = 'WebGPU renderer warming up';
+let lastRenderRequest = 0;
 
 const minimap = createMinimap(mapBox, {
   onPlanStart(position) {
@@ -88,28 +98,34 @@ const minimap = createMinimap(mapBox, {
     crossed = false;
     singularityReached = false;
     state = launchFromLocal({ r: position.r, phi: Math.atan2(position.z, position.x), betaRadial: 0, betaTangential: 0 });
+    lastRenderableState = state;
     const inward = inwardVector(position);
     setCameraLookDirection(camera, inward.x, inward.z);
     plannedVector = { x: inward.x, z: inward.z, pixels: 0 };
     updateMap();
+    requestRender();
   },
   onPlanMove(position, vector) {
     plannedVector = vector.pixels < 8 ? { ...inwardVector(position), pixels: vector.pixels } : vector;
     const dir = normalize2(plannedVector.x, plannedVector.z);
     setCameraLookDirection(camera, dir.x, dir.z);
     state = plannedState(position, plannedVector);
+    lastRenderableState = state;
     running = false;
     updateMap();
+    requestRender();
   },
   onPlanCommit(position, vector) {
     plannedVector = vector.pixels < 8 ? { ...inwardVector(position), pixels: vector.pixels } : vector;
     const dir = normalize2(plannedVector.x, plannedVector.z);
     setCameraLookDirection(camera, dir.x, dir.z);
     state = plannedState(position, plannedVector);
+    lastRenderableState = state;
     running = true;
     crossed = false;
     singularityReached = false;
     updateMap();
+    requestRender();
   },
 });
 
@@ -128,6 +144,7 @@ canvas.addEventListener('pointermove', (event) => {
   lastLookX = event.clientX;
   lastLookY = event.clientY;
   updateMap();
+  requestRender();
 });
 function stopLooking(event?: PointerEvent) {
   looking = false;
@@ -143,46 +160,107 @@ canvas.addEventListener('lostpointercapture', () => {
   canvas.style.cursor = 'grab';
 });
 
-window.addEventListener('resize', () => resizeCanvasToDisplaySize(gl, canvas, 1.25));
+diskToggle.input.addEventListener('change', () => requestRender());
+qualitySelect.addEventListener('change', () => requestRender());
+window.addEventListener('resize', () => requestRender());
+
 updateMap();
+requestRender();
+requestAnimationFrame(frame);
 
 function frame(nowMs: number) {
   const now = nowMs / 1000;
-  const dt = Math.min(now - lastFrame, 0.04);
+  const dt = Math.min(now - lastFrame, 0.035);
   lastFrame = now;
-  resizeCanvasToDisplaySize(gl, canvas, 1.25);
 
   if (running && !singularityReached) {
-    const tauRate = state.r < 1 ? 0.24 : 0.72;
-    state = stepFall(state, dt * tauRate);
+    state = stepFall(state, dt * 0.82);
     crossed = isHorizonCrossed(state);
     singularityReached = isSingularityReached(state);
-    if (singularityReached) running = false;
+    if (singularityReached) {
+      running = false;
+    } else {
+      lastRenderableState = state;
+    }
     updateMap();
+    if (!singularityReached && now - lastRenderRequest > 0.1) {
+      requestRender();
+    }
   }
 
-  const pos = positionFromState(state);
-  const observerFrame = observerFrameFromState(state, camera);
-  const interior = Math.min(1, Math.max(0, (1.0 - state.r) / 0.08));
-  const singularityFade = Math.min(1, Math.max(0, (0.16 - state.r) / 0.08));
-
-  gl.uniform2f(uRes, canvas.width, canvas.height);
-  gl.uniform1f(uTime, now);
-  gl.uniform3f(uObserverPos, pos.x, 0, pos.z);
-  uniformVec4(uTetradTime, observerFrame.tetrad.eTime);
-  uniformVec4(uTetradRight, observerFrame.tetrad.eRight);
-  uniformVec4(uTetradUp, observerFrame.tetrad.eUp);
-  uniformVec4(uTetradForward, observerFrame.tetrad.eForward);
-  gl.uniform3f(uObserverBeta, observerFrame.beta.x, observerFrame.beta.y, observerFrame.beta.z);
-  gl.uniform1f(uInterior, interior);
-  gl.uniform1f(uSingularityFade, singularityFade);
-  gl.uniform1f(uDiskEnabled, diskToggle.checked ? 1 : 0);
-  gl.drawArrays(gl.TRIANGLES, 0, 3);
-
-  renderReadout(observerFrame.speed, tetradResidual(observerFrame.tetrad));
+  renderReadout();
   requestAnimationFrame(frame);
 }
-requestAnimationFrame(frame);
+
+function requestRender(): void {
+  const now = performance.now() / 1000;
+  if (now - lastRenderRequest < 0.08) return;
+  lastRenderRequest = now;
+  if (renderInFlight) {
+    pendingRender = true;
+    return;
+  }
+  renderInFlight = true;
+  pendingRender = false;
+  void renderFallView().finally(() => {
+    renderInFlight = false;
+    if (pendingRender) requestRender();
+  });
+}
+
+async function renderFallView(): Promise<void> {
+  if (singularityReached) {
+    renderMessage = 'singularity cutoff reached; rendering paused';
+    return;
+  }
+  const options = createFallRenderOptions(lastRenderableState);
+  const result = await renderWebGpuCompositeFromCameraToCanvas(options, canvas);
+  renderMessage = result.message;
+}
+
+function createFallRenderOptions(renderState: FallState): CompositeCameraSampleOptions {
+  const { width, height } = selectedRenderSize();
+  const observerFrame = observerFrameFromState(renderState, camera);
+  return {
+    width,
+    height,
+    position: spatialPositionFromState(renderState),
+    tetrad: observerFrame.tetrad,
+    observerVelocity: observerFrame.fourVelocity,
+    params: FALL_PARAMS,
+    verticalFovRadians: 72 * Math.PI / 180,
+    traceOptions: {
+      stepSize: renderState.r < HORIZON_RADIUS ? 0.018 : 0.026,
+      maxSteps: renderState.r < HORIZON_RADIUS ? 820 : 260,
+      escapeRadius: 38,
+      singularityRadius: SINGULARITY_CUTOFF,
+    },
+    disk: {
+      innerRadius: 1.65,
+      outerRadius: 9.5,
+    },
+    radianceModel: {
+      innerRadius: 1.65,
+      outerRadius: 9.5,
+      innerTemperature: 7800,
+      emissivityScale: diskToggle.input.checked ? 0.68 : 0,
+      boostPower: 3.2,
+      spinDirection: 1,
+      emissionPhase: renderState.t * 0.11,
+    },
+  };
+}
+
+function selectedRenderSize(): { width: number; height: number } {
+  if (qualitySelect.value === 'native') {
+    return {
+      width: Math.max(1, Math.round(window.innerWidth)),
+      height: Math.max(1, Math.round(window.innerHeight)),
+    };
+  }
+  const [width, height] = qualitySelect.value.split('x').map((value) => Number(value));
+  return { width, height };
+}
 
 function plannedState(position: MapPosition, vector: MapVector): FallState {
   const phi = Math.atan2(position.z, position.x);
@@ -207,7 +285,7 @@ function updateMap() {
   minimap.setState({
     position: pos,
     vector: plannedVector.pixels > 0 ? plannedVector : { x: flatForward.x, z: flatForward.z, pixels: 0 },
-    preview: previewFall(state, 45),
+    preview: previewFall(state, 38),
     running,
     crossed,
   });
@@ -223,28 +301,62 @@ function normalize2(x: number, z: number): { x: number; z: number } {
   return { x: x / len, z: z / len };
 }
 
-function uniformVec4(location: WebGLUniformLocation | null, v: Vec4) {
-  gl.uniform4f(location, v.t, v.x, v.y, v.z);
-}
-
-function renderReadout(speed: number, frameResidual: number) {
+function renderReadout() {
   const status = singularityReached
     ? 'singularity'
     : crossed
-      ? 'inside horizon'
+      ? 'inside Kerr horizon'
       : running ? 'falling' : 'planning';
+  if (singularityReached) {
+    readout.innerHTML =
+      `<div>status: <span style="color:#e8b873">${status}</span></div>` +
+      `<div>r: ${state.r.toFixed(3)} | cutoff: ${SINGULARITY_CUTOFF.toFixed(3)}</div>` +
+      `<div>proper time: ${state.tau.toFixed(2)}</div>` +
+      `<div>Kerr-Schild time: ${formatTime(state.t)}</div>` +
+      `<div>H + 1/2: ${timelikeResidual(state).toExponential(1)}</div>` +
+      `<div style="color:#7d8290;margin-top:6px">${renderMessage}</div>` +
+      `<div style="color:#7d8290;margin-top:6px">minimap: choose a new start to run again</div>`;
+    return;
+  }
+
+  const observerFrame = observerFrameFromState(state, camera);
+  const residual = tetradResidual(observerFrame.tetrad, state);
   readout.innerHTML =
     `<div>status: <span style="color:#e8b873">${status}</span></div>` +
-    `<div>r: ${state.r.toFixed(3)} rs</div>` +
+    `<div>r: ${state.r.toFixed(3)} | horizon: ${HORIZON_RADIUS.toFixed(3)}</div>` +
     `<div>proper time: ${state.tau.toFixed(2)}</div>` +
-    `<div>distant time: ${crossed ? 'unreachable' : formatDistantTime(state.t)}</div>` +
-    `<div>local speed: ${(speed * 100).toFixed(1)}% c</div>` +
-    `<div>tetrad residual: ${frameResidual.toExponential(1)}</div>` +
+    `<div>Kerr-Schild time: ${formatTime(state.t)}</div>` +
+    `<div>local speed: ${(observerFrame.speed * 100).toFixed(1)}% c</div>` +
+    `<div>H + 1/2: ${timelikeResidual(state).toExponential(1)}</div>` +
+    `<div>tetrad residual: ${residual.toExponential(1)}</div>` +
+    `<div style="color:#7d8290;margin-top:6px">${renderMessage}</div>` +
     `<div style="color:#7d8290;margin-top:6px">main canvas: drag to look</div>` +
     `<div style="color:#7d8290">minimap: down = place, drag = aim, release = fall</div>`;
 }
 
-function formatDistantTime(t: number): string {
-  if (t > 9999) return t.toExponential(2);
+function formatTime(t: number): string {
+  if (Math.abs(t) > 9999) return t.toExponential(2);
   return t.toFixed(2);
+}
+
+function labeledCheckbox(text: string, checked: boolean): { label: HTMLLabelElement; input: HTMLInputElement } {
+  const label = document.createElement('label');
+  label.style.cssText = 'display:flex;gap:8px;align-items:center;';
+  const input = document.createElement('input');
+  input.type = 'checkbox';
+  input.checked = checked;
+  input.style.cssText = 'accent-color:#e8b873;';
+  const span = document.createElement('span');
+  span.textContent = text;
+  label.append(input, span);
+  return { label, input };
+}
+
+function labeledControl(text: string, control: HTMLElement): HTMLElement {
+  const label = document.createElement('label');
+  label.style.cssText = 'display:flex;gap:8px;align-items:center;justify-content:space-between;';
+  const span = document.createElement('span');
+  span.textContent = text;
+  label.append(span, control);
+  return label;
 }

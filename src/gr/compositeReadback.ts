@@ -1,5 +1,5 @@
 export const COMPOSITE_INPUT_FLOATS_PER_RAY = 28;
-export const COMPOSITE_OUTPUT_FLOATS_PER_RAY = 8;
+export const COMPOSITE_OUTPUT_FLOATS_PER_RAY = 16;
 export const COMPOSITE_FLOAT_BYTES = Float32Array.BYTES_PER_ELEMENT;
 export const COMPOSITE_DETAIL_DIFF_THRESHOLD = 5e-2;
 
@@ -10,6 +10,9 @@ export interface CompositeOutputRow {
   diskRadius: number;
   color: [number, number, number];
   drift: number;
+  skyDirection: [number, number, number];
+  skyMix: number;
+  diskColor: [number, number, number];
 }
 
 export interface CompositeComparison {
@@ -47,6 +50,9 @@ export function compositeOutputRows(output: Float32Array<ArrayBufferLike>): Comp
       diskRadius: output[i + 3],
       color: [output[i + 4], output[i + 5], output[i + 6]],
       drift: output[i + 7],
+      skyDirection: [output[i + 8], output[i + 9], output[i + 10]],
+      skyMix: output[i + 11],
+      diskColor: [output[i + 12], output[i + 13], output[i + 14]],
     });
   }
   return rows;

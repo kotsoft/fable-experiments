@@ -22,6 +22,8 @@ export default defineConfig({
         kerrTutorial: fileURLToPath(new URL('./kerr/tutorial.html', import.meta.url)),
         fall: fileURLToPath(new URL('./fall/index.html', import.meta.url)),
         fallTutorial: fileURLToPath(new URL('./fall/tutorial.html', import.meta.url)),
+        fallfable: fileURLToPath(new URL('./fallfable/index.html', import.meta.url)),
+        fallfableTutorial: fileURLToPath(new URL('./fallfable/tutorial.html', import.meta.url)),
         gr: fileURLToPath(new URL('./gr/index.html', import.meta.url)),
       },
     },
