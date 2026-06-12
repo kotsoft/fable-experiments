@@ -1,0 +1,97 @@
+import { describe, expect, it } from 'vitest';
+import { kerrSchildParams } from '../src/gr/kerrSchild';
+import { escapedBackgroundColor, renderProbeGrid } from '../src/gr/referenceProbe';
+import { buildObserverTetrad, staticObserverFourVelocity } from '../src/gr/tetrad';
+
+describe('CPU reference ray probe', () => {
+  it('renders deterministic structured diagnostics for a Schwarzschild view', () => {
+    const params = kerrSchildParams(0, 1);
+    const position = { x: 12, y: 0, z: 0 };
+    const tetrad = buildObserverTetrad(position, params, staticObserverFourVelocity(position, params));
+    const grid = renderProbeGrid(
+      params,
+      { position, tetrad, verticalFovRadians: 1.1 },
+      9,
+      5,
+      {
+        stepSize: 0.05,
+        maxSteps: 2200,
+        escapeRadius: 32,
+        singularityRadius: 0.2,
+      },
+    );
+
+    const statuses = new Set(grid.rays.map((ray) => ray.status));
+
+    expect(grid.width).toBe(9);
+    expect(grid.height).toBe(5);
+    expect(grid.rays).toHaveLength(45);
+    expect(statuses.has('horizon')).toBe(true);
+    expect(statuses.has('escaped')).toBe(true);
+    expect(Math.max(...grid.rays.map((ray) => ray.maxHamiltonianDrift))).toBeLessThan(2e-6);
+    expect(grid.rays.every((ray) => ray.steps >= 0 && Number.isFinite(ray.finalRadius))).toBe(true);
+  });
+
+  it('renders finite Kerr diagnostics suitable for future GPU readback comparisons', () => {
+    const params = kerrSchildParams(0.75, 1);
+    const position = { x: 10, y: -2, z: 1.5 };
+    const tetrad = buildObserverTetrad(position, params, staticObserverFourVelocity(position, params));
+    const grid = renderProbeGrid(
+      params,
+      { position, tetrad, verticalFovRadians: 0.9 },
+      6,
+      4,
+      {
+        stepSize: 0.02,
+        maxSteps: 3600,
+        escapeRadius: 34,
+        singularityRadius: 0.2,
+      },
+    );
+
+    expect(grid.rays).toHaveLength(24);
+    expect(grid.rays.every((ray) => ray.color.every(Number.isFinite))).toBe(true);
+    expect(Math.max(...grid.rays.map((ray) => ray.maxHamiltonianDrift))).toBeLessThan(2e-6);
+  });
+
+  it('reports root-refined disk hits with radiance diagnostics', () => {
+    const params = kerrSchildParams(0.4, 1);
+    const position = { x: 10, y: 0, z: 3 };
+    const tetrad = buildObserverTetrad(position, params, staticObserverFourVelocity(position, params));
+    const grid = renderProbeGrid(
+      params,
+      { position, tetrad, verticalFovRadians: 0.75 },
+      5,
+      5,
+      {
+        stepSize: 0.04,
+        maxSteps: 1800,
+        escapeRadius: 30,
+        singularityRadius: 0.2,
+      },
+      { innerRadius: 3, outerRadius: 18 },
+      {
+        innerRadius: 3,
+        outerRadius: 18,
+        innerTemperature: 7200,
+        emissivityScale: 1,
+        boostPower: 4,
+      },
+    );
+    const diskHits = grid.rays.filter((ray) => ray.status === 'disk');
+
+    expect(diskHits.length).toBeGreaterThan(0);
+    expect(diskHits.every((ray) => ray.diskHit?.radiance)).toBe(true);
+    expect(diskHits.every((ray) => ray.diskHit!.radius >= 3 && ray.diskHit!.radius <= 18)).toBe(true);
+    expect(diskHits.every((ray) => ray.color.every(Number.isFinite))).toBe(true);
+  });
+
+  it('uses a finite analytic background with bright fixed stars for escaped rays', () => {
+    const star = escapedBackgroundColor({ x: 0.42, y: 0.16, z: 0.89 });
+    const nearbySky = escapedBackgroundColor({ x: 0.62, y: 0.16, z: 0.76 });
+
+    expect(star.every(Number.isFinite)).toBe(true);
+    expect(nearbySky.every(Number.isFinite)).toBe(true);
+    expect(star[0] + star[1] + star[2]).toBeGreaterThan(nearbySky[0] + nearbySky[1] + nearbySky[2]);
+  });
+});

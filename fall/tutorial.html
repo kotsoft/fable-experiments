@@ -1,0 +1,285 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>How falling into the black hole works</title>
+    <style>
+      :root {
+        --bg: #0b0c10;
+        --fg: #c9cdd6;
+        --dim: #7d8290;
+        --accent: #e8b873;
+        --line: #23262e;
+      }
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--fg);
+        font: 16px/1.65 system-ui, sans-serif;
+      }
+      main { max-width: 46rem; margin: 0 auto; padding: 3rem 1.25rem 6rem; }
+      h1 { font-size: 1.7rem; line-height: 1.25; color: #fff; }
+      h2 { font-size: 1.15rem; margin-top: 3rem; color: var(--accent); }
+      a { color: var(--accent); }
+      p { margin: 0.9rem 0; }
+      .eq {
+        text-align: center;
+        font-family: Georgia, 'Times New Roman', serif;
+        font-style: italic;
+        font-size: 1.12rem;
+        margin: 1.3rem 0;
+        color: #e8eaf0;
+      }
+      .eq sub, .eq sup { font-size: 0.72em; }
+      var { font-family: Georgia, serif; }
+      pre {
+        background: #11131a;
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        padding: 0.8rem 1rem;
+        overflow-x: auto;
+        font-size: 0.85rem;
+        line-height: 1.5;
+        color: #b8c4d8;
+      }
+      figure { margin: 1.6rem 0; }
+      figure svg {
+        display: block;
+        width: 100%;
+        height: auto;
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        background: #07080c;
+      }
+      figcaption { font-size: 0.85rem; color: var(--dim); margin-top: 0.5rem; }
+      .controls {
+        display: flex;
+        align-items: center;
+        gap: 0.8rem;
+        margin: 0.8rem 0;
+        font-size: 0.9rem;
+        color: var(--dim);
+      }
+      .controls input[type="range"] { flex: 1; accent-color: var(--accent); }
+      .controls output { min-width: 17rem; color: var(--fg); font-variant-numeric: tabular-nums; }
+      .note { font-size: 0.88rem; color: var(--dim); border-left: 2px solid var(--line); padding-left: 0.9rem; }
+      details {
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        padding: 0 1rem;
+        margin: 1.3rem 0;
+        background: #0e1016;
+      }
+      details summary {
+        cursor: pointer;
+        padding: 0.7rem 0;
+        color: var(--accent);
+        font-size: 0.95rem;
+      }
+      details summary:hover { color: #f4cd96; }
+      details[open] summary { border-bottom: 1px solid var(--line); }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Falling into a Schwarzschild black hole</h1>
+      <p>
+        The <a href="/fall/">fall demo</a> is a first-person version of the earlier black-hole
+        renderer. The camera is no longer a fixed observer outside the hole: it is a massive
+        particle following a timelike geodesic. Each animation frame advances that particle in its
+        own proper time, builds a local relativistic camera frame around it, then ray-traces what
+        light reaches that falling observer.
+      </p>
+      <p class="note">
+        This page assumes the <a href="/blackhole/tutorial.html">light-bending baseline</a> and
+        the <a href="/kerr/tutorial.html">Kerr-Schild integrator</a> are already familiar. It
+        focuses on the part those pages do not teach: how to make the camera itself a physical
+        observer with clocks, conserved quantities, a local tetrad, and a horizon-crossing frame.
+      </p>
+
+      <h2>1 - The state of the falling observer</h2>
+      <p>
+        The simulation uses the Schwarzschild metric in units where the horizon radius is
+        <var>r<sub>s</sub></var> = 1 and <var>c</var> = 1:
+      </p>
+      <p class="eq">
+        ds² = -(1 - 1/r) dt² + dr²/(1 - 1/r) + r² dφ²
+      </p>
+      <p>
+        A falling body needs only a compact state: radius <var>r</var>, angle <var>φ</var>,
+        proper time <var>τ</var>, distant Schwarzschild time <var>t</var>, plus two conserved
+        quantities: energy <var>E</var> and angular momentum <var>L</var>.
+      </p>
+      <p>
+        The minimap lets you choose a local launch velocity as measured by a hovering observer at
+        that radius. The code converts that local velocity into <var>E</var> and <var>L</var>:
+      </p>
+      <p class="eq">
+        γ = 1 / √(1 - β²), &nbsp;
+        E = γ√(1 - 1/r), &nbsp;
+        L = rγβ<sub>φ</sub>
+      </p>
+      <pre><code>const gamma = 1 / Math.sqrt(1 - beta2);
+energy = gamma * Math.sqrt(1 - 1 / r);
+angularMomentum = r * gamma * betaTangential;</code></pre>
+
+      <h2>2 - Proper-time integration</h2>
+      <p>
+        Once <var>E</var> and <var>L</var> are known, the worldline follows three first-order
+        equations. These are what <code>stepFall</code> integrates with RK4:
+      </p>
+      <p class="eq">
+        dr/dτ = ±√[ E² - (1 - 1/r)(1 + L²/r²) ], &nbsp;
+        dφ/dτ = L/r², &nbsp;
+        dt/dτ = E/(1 - 1/r)
+      </p>
+      <p>
+        The square-root term is the radial kinetic energy left after gravity and angular momentum
+        have taken their share. The sign tracks whether the traveler is moving outward or inward;
+        if an outward trajectory reaches a turning point, the sign flips and the fall begins.
+      </p>
+      <figure>
+        <svg id="svgTrajectories" viewBox="0 0 800 560" xmlns="http://www.w3.org/2000/svg"></svg>
+        <figcaption>
+          Top-down worldlines generated with the same equations as <code>src/fall/physics.ts</code>.
+          More tangential launch speed turns the plunge into a longer spiral, but the horizon still
+          wins once the trajectory lacks enough energy to escape.
+        </figcaption>
+      </figure>
+
+      <h2>3 - Reading the potential</h2>
+      <p>
+        The radial equation can be read as <var>(dr/dτ)² = E² - V(r)</var>, with
+        <var>V(r)</var> = (1 - 1/r)(1 + L²/r²). That makes it easy to preview whether a launch
+        dives, turns around, or loiters near an unstable circular orbit.
+      </p>
+      <div class="controls">
+        <label for="launchBeta">tangential launch βφ</label>
+        <input id="launchBeta" type="range" min="0" max="0.82" step="0.005" value="0.38" />
+        <output id="launchReadout"></output>
+      </div>
+      <figure>
+        <svg id="svgPotential" viewBox="0 0 800 500" xmlns="http://www.w3.org/2000/svg"></svg>
+        <figcaption>
+          Effective potential for a launch from r = 12 with zero radial velocity. Motion is allowed
+          where E² sits above V(r). A crossing marks a radial turning point.
+        </figcaption>
+      </figure>
+
+      <h2>4 - Two clocks disagree</h2>
+      <p>
+        The falling observer crosses the horizon in finite proper time. A distant Schwarzschild
+        clock does not see the crossing finish, because <var>dt/dτ = E/(1 - 1/r)</var> diverges
+        as <var>r</var> approaches 1. The demo reflects that: proper time keeps running, while the
+        distant-time readout becomes unreachable after horizon crossing.
+      </p>
+      <figure>
+        <svg id="svgClocks" viewBox="0 0 800 500" xmlns="http://www.w3.org/2000/svg"></svg>
+        <figcaption>
+          Radial drop from rest at r = 12. Proper time reaches the horizon normally; distant time
+          climbs rapidly and then stops being a usable outside coordinate.
+        </figcaption>
+      </figure>
+
+      <details>
+        <summary>Why does the code stop distant time inside the horizon?</summary>
+        <p>
+          Schwarzschild <var>t</var> is a coordinate chosen by distant observers. It becomes
+          singular at the horizon, even though the falling traveler feels nothing special there.
+          Inside the horizon, decreasing <var>r</var> is as unavoidable as moving toward tomorrow,
+          so the demo treats <var>t</var> as an outside-only readout and switches the visual ray
+          tracer to horizon-safe coordinates.
+        </p>
+      </details>
+
+      <h2>5 - Building a first-person relativistic camera</h2>
+      <p>
+        A normal camera stores right, up, and forward vectors. A relativistic camera stores an
+        orthonormal <em>tetrad</em>: one time axis and three spatial axes, all measured in the
+        observer's local inertial frame. The code first computes the faller's local velocity
+        <var>β</var>, then Lorentz-boosts the player's look basis by that velocity.
+      </p>
+      <figure>
+        <svg id="svgTetrad" viewBox="0 0 800 430" xmlns="http://www.w3.org/2000/svg"></svg>
+        <figcaption>
+          The shader turns a screen-space ray into a spacetime photon using the tetrad:
+          <var>k</var> = <var>e</var><sub>time</sub> + x<var>e</var><sub>right</sub> +
+          y<var>e</var><sub>up</sub> + z<var>e</var><sub>forward</sub>. That is what creates
+          aberration and Doppler shift from the falling observer's motion.
+        </figcaption>
+      </figure>
+      <pre><code>photon = eTime + eRight * rdLocal.x + eUp * rdLocal.y + eForward * rdLocal.z;
+rd = normalize(photon.yzw);</code></pre>
+
+      <h2>6 - Rays from a moving observer</h2>
+      <p>
+        The renderer traces photons backward from the falling camera, but the important new step is
+        the launch frame. A screen ray first becomes a local photon through the tetrad above; only
+        then does the shader integrate it through the black-hole spacetime. That separation is what
+        lets the same sky renderer work for a hovering camera, a plunging camera, or eventually a
+        freely falling Kerr observer.
+      </p>
+      <p class="eq">
+        local screen ray → tetrad photon → coordinate momentum → backward geodesic
+      </p>
+      <p>
+        The current Schwarzschild demo has a pragmatic split. Outside the horizon it uses the
+        fast photon-potential method taught in the baseline tutorial. Inside the horizon it switches
+        to a Hamiltonian in Kerr-Schild-like Cartesian coordinates, which do not blow up at
+        <var>r</var> = 1:
+      </p>
+      <p class="eq">
+        H(q,p) = ½[-1 + |p|² - (1/r)(-1 + l·p)²]
+      </p>
+      <figure>
+        <svg id="svgPipeline" viewBox="0 0 800 430" xmlns="http://www.w3.org/2000/svg"></svg>
+        <figcaption>
+          The fall renderer has two ray paths: a faster exterior photon-potential trace, and a
+          horizon-safe Hamiltonian trace once the camera is inside.
+        </figcaption>
+      </figure>
+      <p>
+        The deeper research target removes this branch: use one Kerr-Schild Hamiltonian ray path
+        everywhere, even outside the horizon, then use the Schwarzschild shortcut only as a test
+        mode. The final color still needs the falling observer's motion, so the demo applies a
+        compact gravitational/velocity shift:
+      </p>
+      <pre><code>shift = gamma * (1 + dot(observerBeta, rayDir)) / sqrt(abs(1 - 1 / r));</code></pre>
+
+      <h2>7 - What the minimap is really doing</h2>
+      <p>
+        Dragging on the minimap is not a screen-space trick. It chooses a position, converts your
+        drag direction into local radial and tangential velocity components, creates a new
+        geodesic with <code>launchFromLocal</code>, and calls <code>previewFall</code> to draw a
+        short proper-time future. Releasing the pointer simply lets that already-computed state
+        start evolving in real time.
+      </p>
+      <p>
+        In the full Kerr version, this same UI action would create an observer tetrad and
+        four-velocity in ingoing Cartesian Kerr-Schild coordinates, then validate the preview by
+        watching energy, angular momentum, the null constraint for camera rays, and smoothness at
+        the horizon.
+      </p>
+      <h2>8 - What this page leaves to the others</h2>
+      <p>
+        The fall page deliberately avoids reteaching photon rings, disk arcs, and Doppler beaming:
+        those are covered in the baseline light-ray tutorial. It also avoids deriving the full Kerr
+        Hamiltonian and shadow checks: those belong to the spin tutorial. The unique lesson here is
+        the observer pipeline: choose a local launch, integrate the worldline in proper time, build
+        the tetrad, and launch every rendered photon from that physical frame.
+      </p>
+      <p class="note">
+        All figures on this page are SVG. The trajectory, potential, and clock plots are generated
+        from the same equations used by the demo, with the same horizon radius convention
+        (<var>r<sub>s</sub></var> = 1).
+      </p>
+      <p>
+        <a href="/fall/">← back to the fall demo</a> · <a href="/">all experiments</a> ·
+        <a href="/blackhole/tutorial.html">light-ray tutorial</a>
+      </p>
+    </main>
+    <script type="module" src="/src/fall-tutorial/main.ts"></script>
+  </body>
+</html>

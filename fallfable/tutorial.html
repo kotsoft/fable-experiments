@@ -1,0 +1,528 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Falling through the Kerr horizon</title>
+    <style>
+      :root {
+        --bg: #0b0c10;
+        --fg: #c9cdd6;
+        --dim: #7d8290;
+        --accent: #e8b873;
+        --line: #23262e;
+      }
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--fg);
+        font: 16px/1.65 system-ui, sans-serif;
+      }
+      main { max-width: 46rem; margin: 0 auto; padding: 3rem 1.25rem 6rem; }
+      h1 { font-size: 1.7rem; line-height: 1.25; color: #fff; }
+      h2 { font-size: 1.15rem; margin-top: 3rem; color: var(--accent); }
+      a { color: var(--accent); }
+      p { margin: 0.9rem 0; }
+      .eq {
+        text-align: center;
+        font-family: Georgia, 'Times New Roman', serif;
+        font-style: italic;
+        font-size: 1.12rem;
+        margin: 1.3rem 0;
+        color: #e8eaf0;
+      }
+      .eq sub, .eq sup { font-size: 0.72em; }
+      var { font-family: Georgia, serif; }
+      pre {
+        background: #11131a;
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        padding: 0.8rem 1rem;
+        overflow-x: auto;
+        font-size: 0.85rem;
+        line-height: 1.5;
+        color: #b8c4d8;
+      }
+      figure { margin: 1.6rem 0; }
+      figure svg {
+        display: block;
+        width: 100%;
+        height: auto;
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        background: #07080c;
+      }
+      figcaption { font-size: 0.85rem; color: var(--dim); margin-top: 0.5rem; }
+      .note { font-size: 0.88rem; color: var(--dim); border-left: 2px solid var(--line); padding-left: 0.9rem; }
+      details {
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        padding: 0 1rem;
+        margin: 1.3rem 0;
+        background: #0e1016;
+      }
+      details summary {
+        cursor: pointer;
+        padding: 0.7rem 0;
+        color: var(--accent);
+        font-size: 0.95rem;
+      }
+      details summary:hover { color: #f4cd96; }
+      details[open] summary { border-bottom: 1px solid var(--line); }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Falling through the Kerr horizon</h1>
+      <p>
+        The <a href="/fallfable/">fallfable demo</a> puts the camera on a worldline that falls into
+        a spinning black hole — and keeps the picture physically meaningful <em>after</em> it
+        crosses the event horizon, all the way down to the inner horizon. The
+        <a href="/blackhole/tutorial.html">Schwarzschild</a> and
+        <a href="/kerr/tutorial.html">Kerr</a> pages explain how to bend light around a black hole
+        seen from a safe distance. This page covers what they don't: coordinates with no seam at
+        the horizon, a camera that is a genuine relativistic observer, and the trick that makes an
+        inside view possible at all — tracing light <em>backwards in time</em>.
+      </p>
+      <p class="note">
+        Everything below uses geometric units (<var>G</var> = <var>c</var> = 1) with
+        <var>M</var> = ½ and spin <var>a</var> = 0.425, i.e. <var>a/M</var> = 0.85 — the demo's
+        parameters. All the formulas are exactly what <code>src/fallfable/kerr.ts</code> and the
+        WGSL trace kernel run.
+      </p>
+
+      <h2>1 — Coordinates with no seam: Kerr–Schild</h2>
+      <p>
+        The textbook Boyer–Lindquist form of the Kerr metric breaks down at the horizon: metric
+        components diverge there, and a naive integrator slows to a crawl and stops at the
+        boundary. That is a fault of the coordinates, not the spacetime. The renderer instead uses
+        <em>ingoing Kerr–Schild</em> coordinates, where the whole metric is flat space plus one
+        rank-one correction:
+      </p>
+      <p class="eq">
+        g<sub>μν</sub> = η<sub>μν</sub> + f l<sub>μ</sub> l<sub>ν</sub>, &nbsp;&nbsp;
+        f = 2M r³ / (r⁴ + a²z²)
+      </p>
+      <p class="eq">
+        l<sub>μ</sub> = ( 1, (r x + a y)/(r² + a²), (r y − a x)/(r² + a²), z/r )
+      </p>
+      <p>
+        Here (<var>x</var>, <var>y</var>, <var>z</var>) are ordinary Cartesian coordinates and
+        <var>r</var> is an ellipsoidal radius defined implicitly by
+        <var>r</var>⁴ − <var>r</var>²(ρ² − a²) − a²z² = 0 with ρ² = x²+y²+z². Every component is
+        finite and smooth at the horizon — worldlines and light rays integrate straight through it
+        without noticing. The price is that these coordinates encode the one-way nature of the
+        horizon in a different way: the light cones <em>tip over</em>.
+      </p>
+      <figure>
+        <svg viewBox="0 0 800 320" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Light cones tipping toward the singularity as radius decreases">
+          <defs>
+            <marker id="arr" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path d="M0 0 L10 5 L0 10 z" fill="#7d8290"/>
+            </marker>
+          </defs>
+          <!-- axes -->
+          <line x1="60" y1="270" x2="770" y2="270" stroke="#23262e" stroke-width="1.5"/>
+          <line x1="60" y1="270" x2="60" y2="40" stroke="#23262e" stroke-width="1.5" marker-end="url(#arr)"/>
+          <text x="46" y="36" fill="#7d8290" font-size="13">t</text>
+          <text x="760" y="292" fill="#7d8290" font-size="13">r</text>
+          <!-- singularity region -->
+          <rect x="60" y="40" width="38" height="230" fill="#1c0f14"/>
+          <text x="66" y="160" fill="#a05060" font-size="12" transform="rotate(-90 72 160)">singularity</text>
+          <!-- horizon line -->
+          <line x1="320" y1="40" x2="320" y2="270" stroke="#4d5361" stroke-dasharray="5 5"/>
+          <text x="306" y="58" fill="#7d8290" font-size="12" text-anchor="end">r₊ horizon</text>
+          <!-- cone helper: each cone drawn as filled wedge from apex -->
+          <!-- far cone at x=700: legs ±45deg -->
+          <g>
+            <path d="M700 230 L650 150 L750 150 Z" fill="#e8b87318" stroke="none"/>
+            <line x1="700" y1="230" x2="650" y2="150" stroke="#e8b873" stroke-width="1.6"/>
+            <line x1="700" y1="230" x2="750" y2="150" stroke="#e8b873" stroke-width="1.6"/>
+            <circle cx="700" cy="230" r="3" fill="#e8eaf0"/>
+            <text x="700" y="252" fill="#7d8290" font-size="12" text-anchor="middle">far away</text>
+          </g>
+          <!-- mid cone at x=480: tilted inward -->
+          <g>
+            <path d="M480 230 L415 158 L518 150 Z" fill="#e8b87318"/>
+            <line x1="480" y1="230" x2="415" y2="158" stroke="#e8b873" stroke-width="1.6"/>
+            <line x1="480" y1="230" x2="518" y2="150" stroke="#e8b873" stroke-width="1.6"/>
+            <circle cx="480" cy="230" r="3" fill="#e8eaf0"/>
+            <text x="480" y="252" fill="#7d8290" font-size="12" text-anchor="middle">approaching</text>
+          </g>
+          <!-- horizon cone at x=320: outgoing leg vertical -->
+          <g>
+            <path d="M320 230 L250 162 L320 145 Z" fill="#e8b87318"/>
+            <line x1="320" y1="230" x2="250" y2="162" stroke="#e8b873" stroke-width="1.6"/>
+            <line x1="320" y1="230" x2="320" y2="145" stroke="#e8b873" stroke-width="1.6"/>
+            <circle cx="320" cy="230" r="3" fill="#e8eaf0"/>
+            <text x="330" y="252" fill="#7d8290" font-size="12" text-anchor="middle">at the horizon</text>
+          </g>
+          <!-- inside cone at x=180: both legs point inward -->
+          <g>
+            <path d="M180 230 L110 170 L152 142 Z" fill="#e8b87318"/>
+            <line x1="180" y1="230" x2="110" y2="170" stroke="#e8b873" stroke-width="1.6"/>
+            <line x1="180" y1="230" x2="152" y2="142" stroke="#e8b873" stroke-width="1.6"/>
+            <circle cx="180" cy="230" r="3" fill="#e8eaf0"/>
+            <text x="180" y="252" fill="#7d8290" font-size="12" text-anchor="middle">inside</text>
+          </g>
+          <text x="395" y="92" fill="#c9cdd6" font-size="13">future light cones tip toward the hole;</text>
+          <text x="395" y="112" fill="#c9cdd6" font-size="13">inside r₊ every future direction has dr &lt; 0</text>
+        </svg>
+        <figcaption>
+          Future light cones in ingoing Kerr–Schild coordinates. At the horizon the outgoing edge
+          of the cone stands exactly vertical — light "moving outward" holds its radius forever.
+          Inside, even the outgoing edge leans inward: <em>everything</em> moves to smaller
+          <var>r</var>. Nothing in the metric breaks; the cones just tip.
+        </figcaption>
+      </figure>
+
+      <h2>2 — The camera is an observer: geodesics and tetrads</h2>
+      <p>
+        The camera is a massive particle on a timelike geodesic. Both the camera (CPU, double
+        precision) and the light rays (GPU) are integrated from the same super-Hamiltonian,
+      </p>
+      <p class="eq">
+        H = ½ g<sup>μν</sup> p<sub>μ</sub> p<sub>ν</sub>, &nbsp;&nbsp;
+        dx<sup>μ</sup>/dλ = ∂H/∂p<sub>μ</sub>, &nbsp;&nbsp;
+        dp<sub>μ</sub>/dλ = −∂H/∂x<sup>μ</sup>
+      </p>
+      <p>
+        with <var>H</var> = −½ on the camera's worldline and <var>H</var> = 0 on light rays.
+        Because the metric is stationary and axisymmetric, <var>E</var> = −p<sub>t</sub> and
+        <var>L<sub>z</sub></var> = x p<sub>y</sub> − y p<sub>x</sub> are conserved — the test suite
+        checks both to machine precision across thousands of integration steps.
+      </p>
+      <p>
+        A camera also needs a notion of "forward", "up" and "right" that makes local sense while
+        moving at relativistic speed through curved spacetime. That is a <em>tetrad</em>: four
+        vectors e<sub>t</sub>, e<sub>x</sub>, e<sub>y</sub>, e<sub>z</sub> that are orthonormal in
+        the metric, with e<sub>t</sub> equal to the camera's four-velocity. The demo builds it by
+        Gram–Schmidt in <var>g</var> from the desired look direction. A pixel's view ray is then
+        assembled <em>in that frame</em> — which is why relativistic aberration and Doppler shifts
+        come out automatically rather than being painted on.
+      </p>
+      <figure>
+        <svg viewBox="0 0 800 300" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Aberration: the same sky seen by a hovering and a fast-falling observer">
+          <!-- left: hovering observer, uniform fan -->
+          <g>
+            <circle cx="210" cy="150" r="5" fill="#e8eaf0"/>
+            <g stroke="#4d5361" stroke-width="1.3">
+              <line x1="210" y1="150" x2="210" y2="60"/>
+              <line x1="210" y1="150" x2="274" y2="86"/>
+              <line x1="210" y1="150" x2="300" y2="150"/>
+              <line x1="210" y1="150" x2="274" y2="214"/>
+              <line x1="210" y1="150" x2="210" y2="240"/>
+              <line x1="210" y1="150" x2="146" y2="214"/>
+              <line x1="210" y1="150" x2="120" y2="150"/>
+              <line x1="210" y1="150" x2="146" y2="86"/>
+            </g>
+            <text x="210" y="272" fill="#7d8290" font-size="13" text-anchor="middle">hovering: sky arrives evenly</text>
+          </g>
+          <!-- right: fast observer, fan compressed toward motion -->
+          <g>
+            <circle cx="570" cy="150" r="5" fill="#e8eaf0"/>
+            <line x1="570" y1="150" x2="500" y2="150" stroke="#e8b873" stroke-width="2" stroke-dasharray="3 3"/>
+            <text x="492" y="136" fill="#e8b873" font-size="12" text-anchor="end">motion</text>
+            <g stroke="#4d5361" stroke-width="1.3">
+              <line x1="570" y1="150" x2="480" y2="150"/>
+              <line x1="570" y1="150" x2="484" y2="118"/>
+              <line x1="570" y1="150" x2="484" y2="182"/>
+              <line x1="570" y1="150" x2="492" y2="92"/>
+              <line x1="570" y1="150" x2="492" y2="208"/>
+              <line x1="570" y1="150" x2="514" y2="70"/>
+              <line x1="570" y1="150" x2="514" y2="230"/>
+              <line x1="570" y1="150" x2="640" y2="116"/>
+            </g>
+            <text x="570" y="272" fill="#7d8290" font-size="13" text-anchor="middle">plunging: the same sky crowds ahead</text>
+          </g>
+        </svg>
+        <figcaption>
+          Aberration falls out of the tetrad. Both observers occupy the same event and see the same
+          photons; decomposing those photons against a boosted frame concentrates the arrival
+          directions toward the direction of motion. Deep inside the hole this is what keeps the
+          outside universe visible: it gathers into a bright window ahead of the plunging camera.
+        </figcaption>
+      </figure>
+      <p>
+        One more frame matters: the planner's launches. "Start at rest with velocity β" has to be
+        measured by <em>someone</em>. A static observer won't do — inside the ergosphere
+        (<var>r</var> &lt; 2<var>M</var> in the equatorial plane) standing still is impossible, as
+        frame dragging forces every timelike worldline to co-rotate. The demo measures launches
+        against the <em>Eulerian observer</em> of the Kerr–Schild time slicing,
+      </p>
+      <p class="eq">
+        u<sup>μ</sup> = ( √(1+f), &nbsp; −f l<sup>i</sup> / √(1+f) )
+      </p>
+      <p>
+        which is timelike at <em>every</em> radius — ergosphere, horizon, interior, everywhere. So
+        the minimap lets you place yourself anywhere, including inside the hole.
+      </p>
+
+      <h2>3 — Rendering backwards: past-directed ray tracing</h2>
+      <p>
+        Here is the heart of the demo. The earlier renderers launch a ray from the camera along the
+        view direction and integrate it <em>forward in time</em>, asking "where does this photon
+        go?" Outside a static black hole that happens to give the right picture, because
+        Schwarzschild looks the same with time reversed. But it fails twice for this demo:
+      </p>
+      <p>
+        First, Kerr is stationary but <em>not</em> static — running time backwards flips the spin.
+        Forward-traced images of a spinning hole come out mirror-imaged, with frame dragging going
+        the wrong way. Second, and fatally: inside the horizon every future-directed path ends at
+        the singularity (section 1's tipped cones). Trace forward from an interior camera and every
+        single pixel dies in the dark. The view would be black, which is <em>wrong</em>.
+      </p>
+      <p>
+        What a camera actually records is light that <em>arrived</em>. The photon reaching the
+        camera from view direction <var>n</var> has momentum k = E(e<sub>t</sub> − n<sup>i</sup>
+        e<sub>i</sub>) in the camera frame. To find where it came from, integrate its time-reverse:
+      </p>
+      <p class="eq">
+        q = −k = −e<sub>t</sub> + n<sup>x</sup> e<sub>x</sub> + n<sup>y</sup> e<sub>y</sub> +
+        n<sup>z</sup> e<sub>z</sub>
+      </p>
+      <p>
+        a <em>past-directed</em> null ray, marched with the same Hamiltonian equations. Inside the
+        horizon the future cone points entirely inward — so the <em>past</em> cone points entirely
+        outward. Past-directed rays launched from an interior camera cross the horizon outward
+        (smoothly, in these coordinates), find the disk and the stars, and the view stays alive
+        until the geometry itself gives out.
+      </p>
+      <figure>
+        <svg viewBox="0 0 800 360" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Forward rays from inside die at the singularity; past-directed rays exit the horizon">
+          <defs>
+            <marker id="arrR" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path d="M0 0 L10 5 L0 10 z" fill="#c95b5b"/>
+            </marker>
+            <marker id="arrG" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path d="M0 0 L10 5 L0 10 z" fill="#e8b873"/>
+            </marker>
+          </defs>
+          <!-- axes -->
+          <line x1="60" y1="310" x2="770" y2="310" stroke="#23262e" stroke-width="1.5"/>
+          <line x1="60" y1="310" x2="60" y2="40" stroke="#23262e" stroke-width="1.5"/>
+          <text x="44" y="50" fill="#7d8290" font-size="13">t</text>
+          <text x="758" y="332" fill="#7d8290" font-size="13">r</text>
+          <rect x="60" y="40" width="34" height="270" fill="#1c0f14"/>
+          <text x="66" y="190" fill="#a05060" font-size="12" transform="rotate(-90 72 190)">singularity</text>
+          <line x1="330" y1="40" x2="330" y2="310" stroke="#4d5361" stroke-dasharray="5 5"/>
+          <text x="338" y="58" fill="#7d8290" font-size="12">r₊ horizon</text>
+          <!-- camera event inside -->
+          <circle cx="210" cy="180" r="5" fill="#e8eaf0"/>
+          <text x="210" y="166" fill="#e8eaf0" font-size="12" text-anchor="middle">camera</text>
+          <!-- forward rays (red) curving to singularity -->
+          <path d="M210 180 C 175 150, 130 120, 96 96" fill="none" stroke="#c95b5b" stroke-width="1.8" marker-end="url(#arrR)"/>
+          <path d="M210 180 C 185 140, 140 105, 96 76" fill="none" stroke="#c95b5b" stroke-width="1.8" marker-end="url(#arrR)"/>
+          <text x="150" y="64" fill="#c95b5b" font-size="12.5">forward in time: every ray</text>
+          <text x="150" y="82" fill="#c95b5b" font-size="12.5">ends at the singularity</text>
+          <!-- past-directed rays (gold) exiting horizon downward in t -->
+          <path d="M210 180 C 280 220, 420 260, 600 286" fill="none" stroke="#e8b873" stroke-width="1.8" marker-end="url(#arrG)"/>
+          <path d="M210 180 C 270 235, 360 280, 480 298" fill="none" stroke="#e8b873" stroke-width="1.8" marker-end="url(#arrG)"/>
+          <text x="470" y="246" fill="#e8b873" font-size="12.5">backward in time: rays exit the horizon</text>
+          <text x="470" y="264" fill="#e8b873" font-size="12.5">and reach the disk and the stars</text>
+          <!-- star and disk icons -->
+          <text x="612" y="284" fill="#e8eaf0" font-size="15">✦</text>
+          <ellipse cx="498" cy="302" rx="26" ry="5" fill="none" stroke="#a4763c" stroke-width="1.6"/>
+        </svg>
+        <figcaption>
+          From a camera inside the horizon, future-directed rays (red) all terminate on the
+          singularity — a forward ray tracer renders black. The time-reversed rays the renderer
+          actually integrates (gold) leave through the horizon, because a horizon is only one-way
+          toward the <em>future</em>.
+        </figcaption>
+      </figure>
+      <p>
+        The normalization is chosen so that q · u<sub>camera</sub> = 1: every ray carries exactly
+        one unit of observed energy. Then the red/blueshift of whatever the ray hits is a single
+        dot product,
+      </p>
+      <p class="eq">
+        g = ν<sub>obs</sub> / ν<sub>em</sub> = 1 / (q<sub>μ</sub> u<sup>μ</sup><sub>emitter</sub>)
+      </p>
+      <p>
+        with the emitter's four-velocity — a circular-orbit frame for the disk, a static frame at
+        infinity for the sky (where q<sub>t</sub> is conserved, so <var>g</var> = 1/q<sub>t</sub>
+        with no extra work). Disk color shifts as a blackbody at <var>g·T</var>, and intensity is
+        boosted by <var>g</var>³ — that one factor produces the bright approaching side and the dim
+        receding side of the disk.
+      </p>
+
+      <h2>4 — Integrating well: analytic gradients and the shadow</h2>
+      <p>
+        Hamilton's equations need ∂H/∂x. The earlier renderers approximate it with central
+        differences of <var>H</var> — six extra metric evaluations per derivative, and in 32-bit
+        GPU floats the differences sit right at the precision floor. Because Kerr–Schild is so
+        compact, this renderer differentiates the metric <em>analytically</em> instead. The only
+        nontrivial piece is the gradient of the implicit radius:
+      </p>
+      <p class="eq">
+        ∇r = ( r²x, &nbsp;r²y, &nbsp;(r²+a²)z ) / ( r·√((ρ²−a²)² + 4a²z²) )
+      </p>
+      <p>
+        from which ∇f and the Jacobian of l<sub>μ</sub> follow by the chain rule. The result is
+        roughly six times fewer metric evaluations per step <em>and</em> an exact derivative — the
+        CPU mirror of this code matches double-precision finite differences to five decimal places
+        in the test suite, and conserved quantities hold to ~10⁻¹⁶ per step.
+      </p>
+      <p>
+        Step size adapts twice over. It scales with <var>r</var>, since curvature (and the disk's
+        fine structure) live near the hole. And it scales with momentum: rays that skim the horizon
+        have their coordinate momentum grow like e<sup>κλ</sup> — the numerical face of infinite
+        redshift. The integrator shrinks the step in proportion, the ray freezes against the
+        horizon, and once its momentum has grown by a factor of a few thousand the pixel is
+        declared <em>shadow</em> and painted black. That is not a hack; an infinitely redshifted
+        ray genuinely carries no light. The black hole's silhouette is exactly the set of pixels
+        whose past never escapes.
+      </p>
+      <details>
+        <summary>Why a ray's momentum explodes at the horizon</summary>
+        <p>
+          Trace backwards from a pixel right at the shadow's edge and the ray asymptotes to the
+          horizon, circling it ever closer without crossing. In ingoing coordinates the "outgoing"
+          mode at the horizon scales like e<sup>κt</sup>, with κ the surface gravity — running the
+          ray backwards winds <var>t</var> arbitrarily far into the past, so the components of
+          p<sub>μ</sub> grow exponentially even though the path itself converges. Physically: for
+          that photon to reach your eye with one unit of energy, it must have left with
+          exponentially more. Follow it far enough back and the required emission energy diverges —
+          nothing real could have produced it, so the pixel is black.
+        </p>
+      </details>
+
+      <h2>5 — What you actually see inside</h2>
+      <p>
+        The common claim that "you see nothing after crossing the horizon" is wrong, and the demo
+        shows why. Light keeps pouring in through the horizon after you cross — and it catches up
+        with you on the way down:
+      </p>
+      <figure>
+        <svg viewBox="0 0 800 340" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Light entering the horizon after the camera still reaches it inside">
+          <defs>
+            <marker id="arrG2" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path d="M0 0 L10 5 L0 10 z" fill="#e8b873"/>
+            </marker>
+            <marker id="arrW" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path d="M0 0 L10 5 L0 10 z" fill="#e8eaf0"/>
+            </marker>
+          </defs>
+          <line x1="60" y1="300" x2="770" y2="300" stroke="#23262e" stroke-width="1.5"/>
+          <line x1="60" y1="300" x2="60" y2="40" stroke="#23262e" stroke-width="1.5"/>
+          <text x="36" y="50" fill="#7d8290" font-size="13">time</text>
+          <text x="752" y="322" fill="#7d8290" font-size="13">r</text>
+          <rect x="60" y="40" width="30" height="260" fill="#1c0f14"/>
+          <line x1="300" y1="40" x2="300" y2="300" stroke="#4d5361" stroke-dasharray="5 5"/>
+          <text x="308" y="58" fill="#7d8290" font-size="12">r₊</text>
+          <!-- camera worldline -->
+          <path d="M700 290 C 520 240, 360 190, 300 160 C 240 130, 150 90, 96 64" fill="none" stroke="#e8eaf0" stroke-width="2.2" marker-end="url(#arrW)"/>
+          <text x="640" y="262" fill="#e8eaf0" font-size="12.5">you</text>
+          <!-- infalling light rays entering later, catching up inside -->
+          <path d="M740 208 C 560 190, 380 160, 262 132" fill="none" stroke="#e8b873" stroke-width="1.6" marker-end="url(#arrG2)"/>
+          <path d="M740 150 C 560 136, 360 112, 196 86" fill="none" stroke="#e8b873" stroke-width="1.6" marker-end="url(#arrG2)"/>
+          <text x="676" y="138" fill="#e8b873" font-size="12.5">light that crossed</text>
+          <text x="676" y="156" fill="#e8b873" font-size="12.5">the horizon after you</text>
+        </svg>
+        <figcaption>
+          Schematic worldlines in horizon-penetrating time. Light that falls in <em>after</em> the
+          camera (gold) is faster and still overtakes it inside, which is why the universe stays
+          visible below r₊. Equivalently: every past-directed ray traced from the interior camera
+          exits — they are these gold lines, run in reverse.
+        </figcaption>
+      </figure>
+      <p>
+        So the interior view is a live — in fact slightly <em>future</em> — feed of the outside
+        universe, compressed by aberration into a window that shrinks as you fall, while the
+        accretion disk wraps across it. Matter that fell in ahead of you is visible too: the model
+        keeps the disk glowing below the innermost stable orbit with a steep exponential fade,
+        because real plasma doesn't switch off at the ISCO — it plunges, still radiating. From
+        inside, that plunging stream is most of what there is to see of the disk.
+      </p>
+      <p>
+        The show ends at the <em>inner horizon</em>. A spinning hole has two:
+      </p>
+      <p class="eq">
+        r<sub>±</sub> = M ± √(M² − a²) &nbsp;&nbsp;→&nbsp;&nbsp; r₊ = 0.763, &nbsp; r₋ = 0.237
+      </p>
+      <figure>
+        <svg viewBox="0 0 800 430" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Anatomy of the Kerr spacetime in the equatorial plane">
+          <!-- disk band -->
+          <circle cx="400" cy="215" r="196" fill="#a4763c12"/>
+          <circle cx="400" cy="215" r="178" fill="#a4763c14"/>
+          <!-- retro photon orbit -->
+          <circle cx="400" cy="215" r="252" fill="none" stroke="#4d5361" stroke-dasharray="2 6"/>
+          <!-- isco -->
+          <circle cx="400" cy="215" r="172" fill="none" stroke="#e8b873" stroke-dasharray="7 6" stroke-opacity="0.55"/>
+          <!-- ergosphere -->
+          <circle cx="400" cy="215" r="130" fill="#3d2f5f22" stroke="#6b5a9e" stroke-dasharray="4 4" stroke-opacity="0.5"/>
+          <!-- prograde photon orbit -->
+          <circle cx="400" cy="215" r="110" fill="none" stroke="#4d5361" stroke-dasharray="2 6"/>
+          <!-- outer horizon -->
+          <circle cx="400" cy="215" r="99" fill="#000" stroke="#2a2e3a"/>
+          <!-- inner horizon -->
+          <circle cx="400" cy="215" r="31" fill="none" stroke="#a05060" stroke-dasharray="4 4"/>
+          <circle cx="400" cy="215" r="2.5" fill="#a05060"/>
+          <!-- labels with leader lines -->
+          <g font-size="12.5" fill="#c9cdd6">
+            <line x1="400" y1="184" x2="540" y2="96" stroke="#3b4150" stroke-width="1"/>
+            <text x="546" y="94" fill="#a05060">inner (Cauchy) horizon r₋ = 0.237</text>
+            <line x1="470" y1="215" x2="588" y2="158" stroke="#3b4150" stroke-width="1"/>
+            <text x="594" y="156">event horizon r₊ = 0.763</text>
+            <line x1="478" y1="293" x2="566" y2="330" stroke="#3b4150" stroke-width="1"/>
+            <text x="572" y="344">prograde photon orbit 0.85</text>
+            <line x1="308" y1="126" x2="208" y2="74" stroke="#3b4150" stroke-width="1"/>
+            <text x="36" y="68" fill="#9d8fc9">ergosphere edge 2M = 1.0</text>
+            <line x1="278" y1="316" x2="196" y2="362" stroke="#3b4150" stroke-width="1"/>
+            <text x="60" y="378" fill="#e8b873">prograde ISCO 1.32 (disk inner edge)</text>
+            <line x1="580" y1="262" x2="650" y2="282" stroke="#3b4150" stroke-width="1"/>
+            <text x="600" y="300" fill="#7d8290">retrograde photon orbit 1.93</text>
+          </g>
+        </svg>
+        <figcaption>
+          The equatorial anatomy at <var>a/M</var> = 0.85, in Kerr–Schild radius (the planner's
+          minimap draws the same rings). Frame dragging splits everything that was a single radius
+          in Schwarzschild: prograde and retrograde photon orbits, prograde ISCO at 1.32 versus
+          retrograde at ≈4.35.
+        </figcaption>
+      </figure>
+      <p>
+        Between r₊ and r₋ the radial direction is timelike and the fall is irreversible. But at
+        r₋ the character changes again — and that surface, the <em>Cauchy horizon</em>, is where
+        general relativity stops making promises. All the infalling light from the universe's
+        entire future piles up there, blueshifted without bound; perturbation analysis says the
+        surface is unstable and curls into a singularity of its own (the "mass inflation"
+        instability). The renderer is honest about this: as the camera approaches r₋ the backward
+        rays blueshift until the momentum guard trips, the window closes out, and the demo ends the
+        worldline with the constraint watchdog rather than rendering fiction beyond it.
+      </p>
+
+      <h2>6 — The disk, briefly</h2>
+      <p>
+        The disk is an optically thin slab sampled along each ray: vertical Gaussian density with
+        scale height 0.075<var>r</var>, temperature following a Novikov–Thorne-like profile
+        <var>T ∝ (r<sub>in</sub>/r)<sup>3/4</sup>(1 − √(r<sub>in</sub>/r))<sup>1/4</sup></var>,
+        colored as a blackbody at <var>g·T</var>, beamed by <var>g</var>³, and attenuated by
+        absorption so the near side has depth. Turbulent texture comes from value noise sampled in
+        a frame that co-rotates at the local orbital rate Ω(<var>r</var>) — evaluated at <em>each
+        ray's own coordinate time</em>, so differential rotation shears the pattern into trailing
+        streaks and light-travel delay across the image is automatic. A per-pixel jitter on the
+        march step keeps the slab from banding.
+      </p>
+
+      <h2>7 — Keeping it fast</h2>
+      <p>
+        The renderer never reads GPU results back. Each animation frame writes one small uniform
+        buffer, dispatches the trace kernel into an HDR texture, and draws it to screen through an
+        ACES tonemap — the CPU learns nothing about the pixels and never waits. Pacing comes from a
+        two-frames-in-flight cap, and the trace resolution itself adapts to the measured GPU frame
+        time, so the demo holds interactive rates on modest hardware and sharpens automatically
+        when the view gets cheap. The analytic gradient of section 4 is what makes the per-step
+        cost low enough for ~1200-step rays at interactive resolutions.
+      </p>
+
+      <p class="note">
+        Back to the <a href="/fallfable/">demo</a>, or the earlier pages:
+        <a href="/blackhole/tutorial.html">how light bends</a> ·
+        <a href="/kerr/tutorial.html">the spinning hole</a>.
+      </p>
+    </main>
+  </body>
+</html>
