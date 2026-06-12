@@ -541,15 +541,23 @@ fn trace(px: vec2<f32>, dims: vec2<f32>) -> vec3<f32> {
 
     let d1 = phase_derivative(p, state.momentum);
 
-    if (r >= escapeR) {
-      if (dot(p, d1.velocity.yzw) > 0.0) {
-        // p_t is conserved; for past-directed q the sky shift is 1 / q_t.
-        let gshift = 1.0 / max(state.momentum.x, 1.0e-4);
-        color = color + trans * sky_radiance(d1.velocity.yzw, gshift);
-        trans = 0.0;
-        debugStatus = 4.0;
-        break;
-      }
+    let v = d1.velocity.yzw;
+    let radialSpeed = dot(p, v);
+    var escaped = r >= escapeR && radialSpeed > 0.0;
+    // Strongly radial rays can skip the last weak-field shell; grazing rays
+    // still use the full escape radius so photon-ring paths keep their shape.
+    let fastEscapeR = max(u.disk.y * 1.65, escapeR * 0.8);
+    let fastEscapeCos2 = 0.74;
+    if (!escaped && r >= fastEscapeR && radialSpeed > 0.0) {
+      escaped = radialSpeed * radialSpeed > fastEscapeCos2 * dot(p, p) * dot(v, v);
+    }
+    if (escaped) {
+      // p_t is conserved; for past-directed q the sky shift is 1 / q_t.
+      let gshift = 1.0 / max(state.momentum.x, 1.0e-4);
+      color = color + trans * sky_radiance(v, gshift);
+      trans = 0.0;
+      debugStatus = 4.0;
+      break;
     }
 
     var h = baseStep * stepJitter * clamp(r * 0.55, 0.16, 6.0) * min(1.0, m0 / mscale);
