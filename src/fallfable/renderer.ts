@@ -7,7 +7,7 @@
 // an rgba16float texture; the present pass upsamples it with a filtering
 // sampler and tonemaps at display resolution.
 
-import { type Tetrad, type Vec4 } from './kerr';
+import { ksRadius, type Tetrad, type Vec4 } from './kerr';
 import { PRESENT_WGSL, SKY_ATLAS_WGSL, TRACE_WGSL } from './shader';
 
 export interface SceneFrame {
@@ -42,7 +42,7 @@ export interface RendererOptions {
     starIntensity: number;
     milkyWayIntensity: number;
     ambient: number;
-    /** 0 normal, 1 termination, 2 cost, 3 cost+term, 4 classifier, 5 tile classifier, 6 shadow skip, 7 shadow skip tint. */
+    /** 0 normal, 1 termination, 2 cost, 3 cost+term, 4 classifier, 5 tile classifier, 6 shadow skip, 7 shadow skip tint, 8 sky skip, 9 sky skip tint. */
     debugStatus?: number;
   };
 }
@@ -113,6 +113,8 @@ export class FallfableRenderer {
   private classifierVisualPipeline: GPUComputePipeline;
   private shadowFillPipeline: GPUComputePipeline;
   private shadowTracePipeline: GPUComputePipeline;
+  private adaptiveFillPipeline: GPUComputePipeline;
+  private adaptiveTracePipeline: GPUComputePipeline;
   private skyPipeline: GPUComputePipeline;
   private presentPipeline: GPURenderPipeline;
   private uniformBuffer: GPUBuffer;
@@ -123,11 +125,14 @@ export class FallfableRenderer {
 
   private traceTexture: GPUTexture | null = null;
   private classifierTexture: GPUTexture | null = null;
+  private lensTexture: GPUTexture | null = null;
   private traceBindGroup: GPUBindGroup | null = null;
   private classifierFeatureBindGroup: GPUBindGroup | null = null;
   private classifierVisualBindGroup: GPUBindGroup | null = null;
   private shadowFillBindGroup: GPUBindGroup | null = null;
   private shadowTraceBindGroup: GPUBindGroup | null = null;
+  private adaptiveFillBindGroup: GPUBindGroup | null = null;
+  private adaptiveTraceBindGroup: GPUBindGroup | null = null;
   private presentBindGroup: GPUBindGroup | null = null;
   private traceWidth = 0;
   private traceHeight = 0;
@@ -178,6 +183,14 @@ export class FallfableRenderer {
     this.shadowTracePipeline = device.createComputePipeline({
       layout: 'auto',
       compute: { module: traceModule, entryPoint: 'shadow_trace_main' },
+    });
+    this.adaptiveFillPipeline = device.createComputePipeline({
+      layout: 'auto',
+      compute: { module: traceModule, entryPoint: 'adaptive_fill_main' },
+    });
+    this.adaptiveTracePipeline = device.createComputePipeline({
+      layout: 'auto',
+      compute: { module: traceModule, entryPoint: 'adaptive_trace_main' },
     });
     this.skyPipeline = device.createComputePipeline({
       layout: 'auto',
@@ -269,21 +282,31 @@ export class FallfableRenderer {
     this.ensureTargets(frame);
     if (!this.traceTexture || !this.traceBindGroup || !this.presentBindGroup) return false;
 
+    const diagnosticMode = Math.floor(this.options.sky.debugStatus ?? 0);
+    const requestedSkyProbe = diagnosticMode === 8 || diagnosticMode === 9;
+    const useSkyProbe = requestedSkyProbe && this.shouldUseAdaptiveSky(frame);
     this.packUniforms(frame);
+    if (requestedSkyProbe && !useSkyProbe) {
+      this.uniforms[39] = 0;
+    }
     this.device.queue.writeBuffer(this.uniformBuffer, 0, this.uniforms);
     const timingSlot = this.takeTimestampSlot();
-    const diagnosticMode = Math.floor(this.options.sky.debugStatus ?? 0);
     const needsClassifierDiagnostic = diagnosticMode === 4 || diagnosticMode === 5;
     const needsShadowProbe = diagnosticMode === 6 || diagnosticMode === 7;
-    const needsClassifier = needsClassifierDiagnostic || needsShadowProbe;
+    const needsSkyProbe = useSkyProbe;
+    const needsSplitProbe = needsShadowProbe || needsSkyProbe;
+    const needsClassifier = needsClassifierDiagnostic || needsSplitProbe;
     if (needsClassifierDiagnostic && (!this.classifierTexture || !this.classifierFeatureBindGroup || !this.classifierVisualBindGroup)) {
       return false;
     }
     if (needsShadowProbe && (!this.classifierTexture || !this.classifierFeatureBindGroup || !this.shadowFillBindGroup || !this.shadowTraceBindGroup)) {
       return false;
     }
+    if (needsSkyProbe && (!this.classifierTexture || !this.classifierFeatureBindGroup || !this.adaptiveFillBindGroup || !this.adaptiveTraceBindGroup)) {
+      return false;
+    }
     const timingPlan: TimestampPlan | null = timingSlot
-      ? needsShadowProbe
+      ? needsSplitProbe
         ? {
             queryCount: 8,
             total: [0, 7],
@@ -333,12 +356,12 @@ export class FallfableRenderer {
             },
           }
         : undefined);
-      output.setPipeline(needsShadowProbe ? this.shadowFillPipeline : this.classifierVisualPipeline);
-      output.setBindGroup(0, needsShadowProbe ? this.shadowFillBindGroup : this.classifierVisualBindGroup);
+      output.setPipeline(needsSkyProbe ? this.adaptiveFillPipeline : needsShadowProbe ? this.shadowFillPipeline : this.classifierVisualPipeline);
+      output.setBindGroup(0, needsSkyProbe ? this.adaptiveFillBindGroup : needsShadowProbe ? this.shadowFillBindGroup : this.classifierVisualBindGroup);
       output.dispatchWorkgroups(Math.ceil(this.traceWidth / 8), Math.ceil(this.traceHeight / 8));
       output.end();
 
-      if (needsShadowProbe) {
+      if (needsSplitProbe) {
         const trace = encoder.beginComputePass(timingSlot && timingPlan?.trace
           ? {
               timestampWrites: {
@@ -348,8 +371,8 @@ export class FallfableRenderer {
               },
             }
           : undefined);
-        trace.setPipeline(this.shadowTracePipeline);
-        trace.setBindGroup(0, this.shadowTraceBindGroup);
+        trace.setPipeline(needsSkyProbe ? this.adaptiveTracePipeline : this.shadowTracePipeline);
+        trace.setBindGroup(0, needsSkyProbe ? this.adaptiveTraceBindGroup : this.shadowTraceBindGroup);
         trace.dispatchWorkgroups(Math.ceil(this.traceWidth / 8), Math.ceil(this.traceHeight / 8));
         trace.end();
       }
@@ -474,6 +497,15 @@ export class FallfableRenderer {
     }
   }
 
+  private shouldUseAdaptiveSky(frame: SceneFrame): boolean {
+    const r = ksRadius(frame.position, { spin: this.options.spin, mass: this.options.mass });
+    const { spin, mass } = this.options;
+    const horizon = mass + Math.sqrt(Math.max(mass * mass - spin * spin, 0));
+    // The classifier pays off in broad exterior sky and shadow-dominant near-horizon views.
+    // Photon-shell views fall back to the normal trace path until there is a per-frame safe-tile budget.
+    return r >= 4.0 || r <= horizon * 1.08;
+  }
+
   private ensureTargets(frame: SceneFrame): void {
     const dpr = Math.min(window.devicePixelRatio || 1, 2);
     const displayWidth = Math.min(Math.max(Math.round(this.canvas.clientWidth * dpr), 64), MAX_DISPLAY_WIDTH);
@@ -490,10 +522,13 @@ export class FallfableRenderer {
 
     this.traceTexture?.destroy();
     this.classifierTexture?.destroy();
+    this.lensTexture?.destroy();
     this.classifierFeatureBindGroup = null;
     this.classifierVisualBindGroup = null;
     this.shadowFillBindGroup = null;
     this.shadowTraceBindGroup = null;
+    this.adaptiveFillBindGroup = null;
+    this.adaptiveTraceBindGroup = null;
     this.traceTexture = this.device.createTexture({
       size: { width: w, height: h },
       format: 'rgba16float',
@@ -506,12 +541,18 @@ export class FallfableRenderer {
       format: 'rgba16float',
       usage: TEXTURE_USAGE.STORAGE_BINDING | TEXTURE_USAGE.TEXTURE_BINDING,
     });
+    this.lensTexture = this.device.createTexture({
+      size: { width: classifierWidth, height: classifierHeight },
+      format: 'rgba16float',
+      usage: TEXTURE_USAGE.STORAGE_BINDING | TEXTURE_USAGE.TEXTURE_BINDING,
+    });
     this.traceWidth = w;
     this.traceHeight = h;
     this.classifierWidth = classifierWidth;
     this.classifierHeight = classifierHeight;
     const view = this.traceTexture.createView();
     const classifierView = this.classifierTexture.createView();
+    const lensView = this.lensTexture.createView();
     const skyView = this.skyMilkyTexture.createView();
     this.traceBindGroup = this.device.createBindGroup({
       layout: this.tracePipeline.getBindGroupLayout(0),
@@ -529,6 +570,7 @@ export class FallfableRenderer {
         { binding: 1, resource: classifierView },
         { binding: 2, resource: this.skySampler },
         { binding: 3, resource: skyView },
+        { binding: 5, resource: lensView },
       ],
     });
     this.classifierVisualBindGroup = this.device.createBindGroup({
@@ -555,6 +597,28 @@ export class FallfableRenderer {
         { binding: 2, resource: this.skySampler },
         { binding: 3, resource: skyView },
         { binding: 4, resource: classifierView },
+      ],
+    });
+    this.adaptiveFillBindGroup = this.device.createBindGroup({
+      layout: this.adaptiveFillPipeline.getBindGroupLayout(0),
+      entries: [
+        { binding: 0, resource: { buffer: this.uniformBuffer } },
+        { binding: 1, resource: view },
+        { binding: 2, resource: this.skySampler },
+        { binding: 3, resource: skyView },
+        { binding: 4, resource: classifierView },
+        { binding: 6, resource: lensView },
+      ],
+    });
+    this.adaptiveTraceBindGroup = this.device.createBindGroup({
+      layout: this.adaptiveTracePipeline.getBindGroupLayout(0),
+      entries: [
+        { binding: 0, resource: { buffer: this.uniformBuffer } },
+        { binding: 1, resource: view },
+        { binding: 2, resource: this.skySampler },
+        { binding: 3, resource: skyView },
+        { binding: 4, resource: classifierView },
+        { binding: 6, resource: lensView },
       ],
     });
     this.presentBindGroup = this.device.createBindGroup({

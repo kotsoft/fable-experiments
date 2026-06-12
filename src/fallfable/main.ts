@@ -108,6 +108,8 @@ diagnosticSelect.style.cssText =
   ['tile-classifier', '5'],
   ['shadow-skip', '6'],
   ['shadow-skip+tint', '7'],
+  ['sky-skip', '8'],
+  ['sky-skip+tint', '9'],
 ].forEach(([label, value]) => {
   const option = document.createElement('option');
   option.textContent = label;
@@ -438,7 +440,7 @@ function updateReadout(atSingularity: boolean): void {
 // ------------------------------------------------------------- benchmarking
 
 type QualityMode = 'auto' | number;
-type DiagnosticMode = 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7;
+type DiagnosticMode = 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9;
 
 interface FallfableViewSnapshot {
   state: PlayerState;
@@ -555,7 +557,7 @@ function currentDiagnosticMode(): DiagnosticMode {
 
 function normalizeDiagnosticMode(mode: unknown): DiagnosticMode {
   const value = Number(mode);
-  return (Number.isFinite(value) && value >= 0 && value <= 7 ? Math.floor(value) : 0) as DiagnosticMode;
+  return (Number.isFinite(value) && value >= 0 && value <= 9 ? Math.floor(value) : 0) as DiagnosticMode;
 }
 
 function setDiagnosticMode(mode: number): void {
@@ -1195,6 +1197,16 @@ function diagnosticModeFromParams(params: URLSearchParams): DiagnosticMode {
     raw === 'shadow-skip tint' ||
     raw === 'shadow-probe-tint'
   ) return 7;
+  if (raw === 'sky' || raw === 'sky-skip' || raw === 'sky-probe' || raw === 'adaptive-sky') return 8;
+  if (
+    raw === 'sky+tint' ||
+    raw === 'sky tint' ||
+    raw === 'sky-skip+tint' ||
+    raw === 'sky-skip tint' ||
+    raw === 'sky-skip-tint' ||
+    raw === 'sky-probe-tint' ||
+    raw === 'adaptive-sky-tint'
+  ) return 9;
   return normalizeDiagnosticMode(raw);
 }
 

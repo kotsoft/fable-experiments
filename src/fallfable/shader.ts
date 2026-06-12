@@ -189,6 +189,8 @@ struct Uniforms {
 @group(0) @binding(2) var skySampler: sampler;
 @group(0) @binding(3) var skyMilky: texture_2d<f32>;
 @group(0) @binding(4) var classifierImage: texture_2d<f32>;
+@group(0) @binding(5) var lensOut: texture_storage_2d<rgba16float, write>;
+@group(0) @binding(6) var lensImage: texture_2d<f32>;
 
 // ---------------------------------------------------------------- geometry
 
@@ -497,11 +499,16 @@ fn disk_sample(pos: vec4<f32>, mom: vec4<f32>, dl: f32) -> DiskSample {
 // ---------------------------------------------------------------- trace
 
 const CLASSIFIER_MAX_STEP_SCALE = 0.4;
+const SAFE_SKY_MAX_DISK_SIGNAL = 0.35;
+const SAFE_SKY_NEIGHBOR_MAX_DISK_SIGNAL = 0.75;
 
 struct TraceResult {
   color: vec3<f32>,
   status: f32,
   steps: f32,
+  escapeDir: vec3<f32>,
+  gshift: f32,
+  diskSignal: f32,
 };
 
 fn trace_result_mode(px: vec2<f32>, dims: vec2<f32>, shadeSky: bool, maxStepScale: f32) -> TraceResult {
@@ -536,6 +543,9 @@ fn trace_result_mode(px: vec2<f32>, dims: vec2<f32>, shadeSky: bool, maxStepScal
   var trans = 1.0;
   var stepsTaken = 0.0;
   var debugStatus = 0.0; // 0 max-steps, 1 cutoff, 2 horizon, 3 blow-up, 4 sky, 5 disk opacity
+  var escapeDir = vec3<f32>(0.0, 0.0, 1.0);
+  var escapeGshift = 1.0;
+  var diskSignal = 0.0;
 
   for (var step = 0; step < maxSteps; step = step + 1) {
     stepsTaken = f32(step + 1);
@@ -576,9 +586,10 @@ fn trace_result_mode(px: vec2<f32>, dims: vec2<f32>, shadeSky: bool, maxStepScal
     }
     if (escaped) {
       // p_t is conserved; for past-directed q the sky shift is 1 / q_t.
+      escapeDir = normalize(v);
+      escapeGshift = 1.0 / max(state.momentum.x, 1.0e-4);
       if (shadeSky) {
-        let gshift = 1.0 / max(state.momentum.x, 1.0e-4);
-        color = color + trans * sky_radiance(v, gshift);
+        color = color + trans * sky_radiance(escapeDir, escapeGshift);
       }
       trans = 0.0;
       debugStatus = 4.0;
@@ -591,6 +602,8 @@ fn trace_result_mode(px: vec2<f32>, dims: vec2<f32>, shadeSky: bool, maxStepScal
       h = min(h, (0.6 * scaleHeight + 0.015) * stepJitter);
       let sample = disk_sample(state.position, state.momentum, h * length(d1.velocity.yzw));
       if (sample.opacity > 0.0 || sample.radiance.x + sample.radiance.y + sample.radiance.z > 0.0) {
+        let diskLum = dot(sample.radiance, vec3<f32>(0.2126, 0.7152, 0.0722));
+        diskSignal = min(1.0, diskSignal + sample.opacity * 2.0 + diskLum * 0.02);
         color = color + trans * sample.radiance;
         trans = trans * exp(-sample.opacity);
         if (trans < 0.012) {
@@ -603,7 +616,7 @@ fn trace_result_mode(px: vec2<f32>, dims: vec2<f32>, shadeSky: bool, maxStepScal
     state = rk4_from_d1(state, h, d1);
   }
 
-  return TraceResult(color, debugStatus, stepsTaken);
+  return TraceResult(color, debugStatus, stepsTaken, escapeDir, escapeGshift, diskSignal);
 }
 
 fn trace_result(px: vec2<f32>, dims: vec2<f32>) -> TraceResult {
@@ -637,7 +650,11 @@ fn trace(px: vec2<f32>, dims: vec2<f32>) -> vec3<f32> {
 }
 
 fn classifier_feature(result: TraceResult) -> vec4<f32> {
-  return vec4<f32>(result.status, trace_linear_cost(result), trace_cost(result), 1.0);
+  return vec4<f32>(result.status, trace_linear_cost(result), trace_cost(result), result.diskSignal);
+}
+
+fn lens_feature(result: TraceResult) -> vec4<f32> {
+  return vec4<f32>(normalize(result.escapeDir), clamp(result.gshift, 1.0e-4, 8.0));
 }
 
 fn classifier_status(feature: vec4<f32>) -> f32 {
@@ -647,7 +664,7 @@ fn classifier_status(feature: vec4<f32>) -> f32 {
 fn classifier_risk(feature: vec4<f32>) -> f32 {
   let status = classifier_status(feature);
   var risk = feature.y;
-  if (status == 5.0) {
+  if (status == 5.0 || feature.w > SAFE_SKY_MAX_DISK_SIGNAL) {
     risk = risk + 2.0; // disk samples are never "safe sky/shadow" tiles.
   }
   if (status == 0.0 || status == 1.0) {
@@ -666,6 +683,9 @@ fn worse_feature(a: vec4<f32>, b: vec4<f32>) -> vec4<f32> {
 fn classifier_color_from_feature(feature: vec4<f32>) -> vec3<f32> {
   let status = classifier_status(feature);
   let cost = feature.z;
+  if (feature.w > SAFE_SKY_MAX_DISK_SIGNAL) {
+    return vec3<f32>(0.9, 0.42, 0.04) * (0.16 + 1.85 * max(cost, feature.w));
+  }
   if (status == 4.0 && cost < 0.38) {
     return mix(vec3<f32>(0.015, 0.07, 0.19), vec3<f32>(0.0, 0.34, 0.88), cost / 0.38);
   }
@@ -678,6 +698,19 @@ fn classifier_color_from_feature(feature: vec4<f32>) -> vec3<f32> {
 fn load_classifier_feature(coord: vec2<u32>, dims: vec2<u32>) -> vec4<f32> {
   let clamped = min(coord, dims - vec2<u32>(1u, 1u));
   return textureLoad(classifierImage, vec2<i32>(i32(clamped.x), i32(clamped.y)), 0);
+}
+
+fn load_lens_feature(coord: vec2<u32>, dims: vec2<u32>) -> vec4<f32> {
+  let clamped = min(coord, dims - vec2<u32>(1u, 1u));
+  return textureLoad(lensImage, vec2<i32>(i32(clamped.x), i32(clamped.y)), 0);
+}
+
+fn lens_dir(feature: vec4<f32>) -> vec3<f32> {
+  let dir = feature.xyz;
+  if (dot(dir, dir) < 1.0e-8) {
+    return vec3<f32>(0.0, 0.0, 1.0);
+  }
+  return normalize(dir);
 }
 
 fn tile_feature(tileCoord: vec2<u32>, classDims: vec2<u32>) -> vec4<f32> {
@@ -693,6 +726,117 @@ fn tile_is_confirmed_shadow(tileCoord: vec2<u32>) -> bool {
   let feature = tile_feature(tileCoord, textureDimensions(classifierImage));
   let status = classifier_status(feature);
   return status == 2.0 || status == 3.0;
+}
+
+const ADAPTIVE_TILE_UNSAFE = 0u;
+const ADAPTIVE_TILE_SHADOW = 1u;
+const ADAPTIVE_TILE_SKY = 2u;
+const SAFE_SKY_MAX_LINEAR_COST = 0.34;
+const SAFE_SKY_MIN_DIR_DOT = 0.9975;
+const SAFE_SKY_MAX_GSHIFT_SPREAD = 0.35;
+
+var<workgroup> adaptiveTileKind: u32;
+
+fn offset_tile_coord(tileCoord: vec2<u32>, offset: vec2<i32>, tileDims: vec2<u32>) -> vec2<u32> {
+  let maxTile = vec2<i32>(i32(tileDims.x) - 1, i32(tileDims.y) - 1);
+  return vec2<u32>(clamp(vec2<i32>(tileCoord) + offset, vec2<i32>(0, 0), maxTile));
+}
+
+fn tile_core_is_safe_sky(
+  tileCoord: vec2<u32>,
+  classDims: vec2<u32>,
+  lensDims: vec2<u32>,
+  maxDiskSignal: f32,
+) -> bool {
+  let tileBase = tileCoord * 2u;
+  let f00 = load_classifier_feature(tileBase, classDims);
+  let f10 = load_classifier_feature(tileBase + vec2<u32>(1u, 0u), classDims);
+  let f01 = load_classifier_feature(tileBase + vec2<u32>(0u, 1u), classDims);
+  let f11 = load_classifier_feature(tileBase + vec2<u32>(1u, 1u), classDims);
+  if (
+    classifier_status(f00) != 4.0 ||
+    classifier_status(f10) != 4.0 ||
+    classifier_status(f01) != 4.0 ||
+    classifier_status(f11) != 4.0 ||
+    f00.w > maxDiskSignal ||
+    f10.w > maxDiskSignal ||
+    f01.w > maxDiskSignal ||
+    f11.w > maxDiskSignal
+  ) {
+    return false;
+  }
+
+  let maxCost = max(max(f00.y, f10.y), max(f01.y, f11.y));
+  if (maxCost > SAFE_SKY_MAX_LINEAR_COST) {
+    return false;
+  }
+
+  let l00 = load_lens_feature(tileBase, lensDims);
+  let l10 = load_lens_feature(tileBase + vec2<u32>(1u, 0u), lensDims);
+  let l01 = load_lens_feature(tileBase + vec2<u32>(0u, 1u), lensDims);
+  let l11 = load_lens_feature(tileBase + vec2<u32>(1u, 1u), lensDims);
+  let d00 = lens_dir(l00);
+  let d10 = lens_dir(l10);
+  let d01 = lens_dir(l01);
+  let d11 = lens_dir(l11);
+  let dirSum = d00 + d10 + d01 + d11;
+  if (dot(dirSum, dirSum) < 1.0e-4) {
+    return false;
+  }
+  let meanDir = normalize(dirSum);
+  let minDirDot = min(min(dot(d00, meanDir), dot(d10, meanDir)), min(dot(d01, meanDir), dot(d11, meanDir)));
+  if (minDirDot < SAFE_SKY_MIN_DIR_DOT) {
+    return false;
+  }
+
+  let gMin = min(min(l00.w, l10.w), min(l01.w, l11.w));
+  let gMax = max(max(l00.w, l10.w), max(l01.w, l11.w));
+  if (gMax - gMin > SAFE_SKY_MAX_GSHIFT_SPREAD * max(gMax, 1.0e-3)) {
+    return false;
+  }
+
+  return true;
+}
+
+fn adaptive_tile_kind(tileCoord: vec2<u32>) -> u32 {
+  let classDims = textureDimensions(classifierImage);
+  let lensDims = textureDimensions(lensImage);
+  if (tile_is_confirmed_shadow(tileCoord)) {
+    return ADAPTIVE_TILE_SHADOW;
+  }
+
+  let tileDims = (classDims + vec2<u32>(1u, 1u)) / 2u;
+  for (var oy = -1; oy <= 1; oy = oy + 1) {
+    for (var ox = -1; ox <= 1; ox = ox + 1) {
+      let neighbor = offset_tile_coord(tileCoord, vec2<i32>(ox, oy), tileDims);
+      var diskLimit = SAFE_SKY_NEIGHBOR_MAX_DISK_SIGNAL;
+      if (ox == 0 && oy == 0) {
+        diskLimit = SAFE_SKY_MAX_DISK_SIGNAL;
+      }
+      if (!tile_core_is_safe_sky(neighbor, classDims, lensDims, diskLimit)) {
+        return ADAPTIVE_TILE_UNSAFE;
+      }
+    }
+  }
+  return ADAPTIVE_TILE_SKY;
+}
+
+fn tile_lens_at_pixel(tileCoord: vec2<u32>, id: vec2<u32>) -> vec4<f32> {
+  let lensDims = textureDimensions(lensImage);
+  let tileBase = tileCoord * 2u;
+  let l00 = load_lens_feature(tileBase, lensDims);
+  let l10 = load_lens_feature(tileBase + vec2<u32>(1u, 0u), lensDims);
+  let l01 = load_lens_feature(tileBase + vec2<u32>(0u, 1u), lensDims);
+  let l11 = load_lens_feature(tileBase + vec2<u32>(1u, 1u), lensDims);
+  let tileOrigin = tileCoord * 8u;
+  let localPx = vec2<f32>(f32(id.x - tileOrigin.x), f32(id.y - tileOrigin.y)) + vec2<f32>(0.5);
+  let t = clamp((localPx - vec2<f32>(1.5)) / 4.0, vec2<f32>(0.0), vec2<f32>(1.0));
+  let dirX0 = mix(lens_dir(l00), lens_dir(l10), t.x);
+  let dirX1 = mix(lens_dir(l01), lens_dir(l11), t.x);
+  let dir = normalize(mix(dirX0, dirX1, t.y));
+  let gX0 = mix(l00.w, l10.w, t.x);
+  let gX1 = mix(l01.w, l11.w, t.x);
+  return vec4<f32>(dir, mix(gX0, gX1, t.y));
 }
 
 @compute @workgroup_size(8, 8)
@@ -716,6 +860,7 @@ fn classify_features_main(@builtin(global_invocation_id) id: vec3<u32>) {
   let samplePx = vec2<f32>(f32(origin.x) + 1.5, f32(origin.y) + 1.5);
   let result = trace_result_mode(samplePx, fullDims, false, CLASSIFIER_MAX_STEP_SCALE);
   textureStore(outImage, vec2<i32>(i32(id.x), i32(id.y)), classifier_feature(result));
+  textureStore(lensOut, vec2<i32>(i32(id.x), i32(id.y)), lens_feature(result));
 }
 
 @compute @workgroup_size(8, 8)
@@ -756,6 +901,54 @@ fn shadow_trace_main(@builtin(global_invocation_id) id: vec3<u32>, @builtin(work
     return;
   }
   if (tile_is_confirmed_shadow(workgroupId.xy)) {
+    return;
+  }
+  let rgb = trace_result(vec2<f32>(f32(id.x), f32(id.y)), vec2<f32>(f32(dims.x), f32(dims.y))).color;
+  textureStore(outImage, vec2<i32>(i32(id.x), i32(id.y)), vec4<f32>(rgb, 1.0));
+}
+
+@compute @workgroup_size(8, 8)
+fn adaptive_fill_main(
+  @builtin(global_invocation_id) id: vec3<u32>,
+  @builtin(workgroup_id) workgroupId: vec3<u32>,
+  @builtin(local_invocation_id) localId: vec3<u32>
+) {
+  if (localId.x == 0u && localId.y == 0u) {
+    adaptiveTileKind = adaptive_tile_kind(workgroupId.xy);
+  }
+  workgroupBarrier();
+
+  let dims = textureDimensions(outImage);
+  if (id.x >= dims.x || id.y >= dims.y || adaptiveTileKind == ADAPTIVE_TILE_UNSAFE) {
+    return;
+  }
+
+  var rgb = vec3<f32>(0.0);
+  if (adaptiveTileKind == ADAPTIVE_TILE_SKY) {
+    let lens = tile_lens_at_pixel(workgroupId.xy, id.xy);
+    rgb = sky_radiance(lens.xyz, lens.w);
+    if (u.sky.w > 8.5) {
+      rgb = rgb * vec3<f32>(0.82, 1.12, 0.9) + vec3<f32>(0.0, 0.035, 0.02);
+    }
+  } else if (u.sky.w > 8.5) {
+    rgb = vec3<f32>(0.0, 0.09, 0.12);
+  }
+  textureStore(outImage, vec2<i32>(i32(id.x), i32(id.y)), vec4<f32>(rgb, 1.0));
+}
+
+@compute @workgroup_size(8, 8)
+fn adaptive_trace_main(
+  @builtin(global_invocation_id) id: vec3<u32>,
+  @builtin(workgroup_id) workgroupId: vec3<u32>,
+  @builtin(local_invocation_id) localId: vec3<u32>
+) {
+  if (localId.x == 0u && localId.y == 0u) {
+    adaptiveTileKind = adaptive_tile_kind(workgroupId.xy);
+  }
+  workgroupBarrier();
+
+  let dims = textureDimensions(outImage);
+  if (id.x >= dims.x || id.y >= dims.y || adaptiveTileKind != ADAPTIVE_TILE_UNSAFE) {
     return;
   }
   let rgb = trace_result(vec2<f32>(f32(id.x), f32(id.y)), vec2<f32>(f32(dims.x), f32(dims.y))).color;
