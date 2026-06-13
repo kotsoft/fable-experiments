@@ -821,9 +821,18 @@ fn tile_feature(tileCoord: vec2<u32>, classDims: vec2<u32>) -> vec4<f32> {
 }
 
 fn tile_is_confirmed_shadow(tileCoord: vec2<u32>) -> bool {
-  let feature = tile_feature(tileCoord, textureDimensions(classifierImage));
-  let status = classifier_status(feature);
-  return status == 2.0 || status == 3.0;
+  let classDims = textureDimensions(classifierImage);
+  let tileBase = tileCoord * 2u;
+  let s00 = classifier_status(load_classifier_feature(tileBase, classDims));
+  let s10 = classifier_status(load_classifier_feature(tileBase + vec2<u32>(1u, 0u), classDims));
+  let s01 = classifier_status(load_classifier_feature(tileBase + vec2<u32>(0u, 1u), classDims));
+  let s11 = classifier_status(load_classifier_feature(tileBase + vec2<u32>(1u, 1u), classDims));
+  return (
+    (s00 == 2.0 || s00 == 3.0) &&
+    (s10 == 2.0 || s10 == 3.0) &&
+    (s01 == 2.0 || s01 == 3.0) &&
+    (s11 == 2.0 || s11 == 3.0)
+  );
 }
 
 const ADAPTIVE_TILE_UNSAFE = 0u;

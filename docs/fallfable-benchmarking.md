@@ -76,6 +76,7 @@ Supported benchmark parameters:
 | --- | --- |
 | `outer-disk` | Wide disk and sky view from above the outer disk. |
 | `disk-graze` | Low-angle rays through disk atmosphere, absorption, and turbulence. |
+| `adaptive-boundary` | Adaptive boundary tracking where grid resolution adapts to steep gradients. |
 | `isco-lens` | Marginally stable orbit with strong near-disk lensing. |
 | `photon-whirl` | Near photon-orbit view where many rays skim before escaping. |
 | `horizon-graze` | Just outside the outer horizon, aimed across the disk. |

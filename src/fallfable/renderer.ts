@@ -306,13 +306,11 @@ export class FallfableRenderer {
     if (!this.traceTexture || !this.traceBindGroup || !this.presentBindGroup) return false;
 
     const diagnosticMode = Math.floor(this.options.sky.debugStatus ?? 0);
-    const requestedSkyProbe = diagnosticMode === 8 || diagnosticMode === 9;
-    if (!requestedSkyProbe) {
-      this.adaptiveSkyActive = false;
-    }
-    const useSkyProbe = requestedSkyProbe && this.shouldUseAdaptiveSky(frame);
+    const diagnosticRequestedSkyProbe = diagnosticMode === 8 || diagnosticMode === 9;
+    const useSkyProbe = this.shouldUseAdaptiveSky(frame);
+    this.adaptiveSkyActive = useSkyProbe;
     this.packUniforms(frame);
-    if (requestedSkyProbe && !useSkyProbe) {
+    if (diagnosticRequestedSkyProbe && !useSkyProbe) {
       this.uniforms[39] = 0;
     }
     this.device.queue.writeBuffer(this.uniformBuffer, 0, this.uniforms);
@@ -448,9 +446,13 @@ export class FallfableRenderer {
     const submittedWidth = this.traceWidth;
     const submittedHeight = this.traceHeight;
     const submittedScale = this.scale;
+    const submittedAt = performance.now();
     this.device.queue.submit([encoder.finish()]);
     this.inFlight += 1;
     void this.device.queue.onSubmittedWorkDone().finally(() => {
+      if (!timingSlot) {
+        this.recordFallbackFrameTiming(performance.now() - submittedAt, submittedWidth, submittedHeight, submittedScale);
+      }
       this.inFlight = Math.max(0, this.inFlight - 1);
     });
     if (timingSlot && timingPlan) {
@@ -512,7 +514,7 @@ export class FallfableRenderer {
   }
 
   private adjustScale(): void {
-    if (!this.autoScale || this.timestampSlots.length === 0 || !Number.isFinite(this.gpuMsEma)) return;
+    if (!this.autoScale || !Number.isFinite(this.gpuMsEma)) return;
     const now = performance.now();
     if (now - this.lastScaleAdjust < 600) return;
     this.lastScaleAdjust = now;
@@ -521,6 +523,20 @@ export class FallfableRenderer {
     } else if (this.gpuMsEma < 15 && this.scale < 1) {
       this.scale = Math.min(1, this.scale * 1.1);
     }
+  }
+
+  private recordFallbackFrameTiming(gpuMs: number, width: number, height: number, scale: number): void {
+    if (!Number.isFinite(gpuMs) || gpuMs <= 0) return;
+    this.gpuMsEma = Number.isFinite(this.gpuMsEma) ? this.gpuMsEma + (gpuMs - this.gpuMsEma) * 0.12 : gpuMs;
+    this.frameTimings.push({
+      gpuMs,
+      width,
+      height,
+      scale,
+      gpuTimerAvailable: false,
+      completedAt: performance.now(),
+    });
+    if (this.frameTimings.length > 900) this.frameTimings.splice(0, this.frameTimings.length - 900);
   }
 
   private shouldUseAdaptiveSky(frame: SceneFrame): boolean {

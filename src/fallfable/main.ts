@@ -452,6 +452,7 @@ let renderer: FallfableRenderer | null = null;
 let rendererMessage = 'starting WebGPU…';
 let benchmarkRunning = false;
 let spikeHuntRunning = false;
+let activeQuality: QualityMode = 'auto';
 let latestBenchmarkResult: FallfableBenchmarkResult | null = null;
 let latestSpikeHuntResult: FallfableSpikeHuntResult | null = null;
 let latestBenchmarkSuiteResult: FallfableBenchmarkSuiteResult | null = null;
@@ -465,9 +466,27 @@ function setRunning(next: boolean): void {
 
 function updateFreezeButton(): void {
   freezeButton.textContent = running ? 'freeze' : 'resume';
+  freezeButton.disabled = isTimedSamplingActive();
 }
 
 updateFreezeButton();
+
+function isTimedSamplingActive(): boolean {
+  return benchmarkRunning || spikeHuntRunning;
+}
+
+function setSamplingControlsActive(active: boolean): void {
+  benchmarkButton.disabled = active;
+  huntButton.disabled = active;
+  freezeButton.disabled = active;
+  benchmarkButton.style.cursor = active ? 'wait' : 'pointer';
+  huntButton.style.cursor = active ? 'wait' : 'pointer';
+}
+
+function setRunningFromControl(next: boolean): void {
+  if (isTimedSamplingActive()) return;
+  setRunning(next);
+}
 
 for (const preset of PRESETS) {
   const button = document.createElement('button');
@@ -564,7 +583,7 @@ canvas.addEventListener('pointerup', stopLook);
 canvas.addEventListener('pointercancel', stopLook);
 
 qualitySelect.addEventListener('change', () => {
-  renderer?.setQuality(qualitySelect.value === 'auto' ? 'auto' : Number(qualitySelect.value));
+  setQuality(qualitySelect.value === 'auto' ? 'auto' : Number(qualitySelect.value));
 });
 
 diagnosticSelect.addEventListener('change', () => {
@@ -576,7 +595,7 @@ exposureInput.addEventListener('input', () => {
 });
 
 freezeButton.addEventListener('click', () => {
-  setRunning(!running);
+  setRunningFromControl(!running);
 });
 
 benchmarkButton.addEventListener('click', () => {
@@ -621,6 +640,7 @@ void FallfableRenderer.create(canvas, {
   },
 }).then((created) => {
   renderer = created;
+  setQuality(activeQuality);
   setDiagnosticMode(currentDiagnosticMode());
   setExposure(currentExposure());
   rendererMessage = created ? 'past-directed Kerr GRRT · analytic geodesics' : 'WebGPU is unavailable in this browser';
@@ -833,12 +853,13 @@ interface FallfableSpikeHuntResult {
 }
 
 function currentQuality(): QualityMode {
-  return qualitySelect.value === 'auto' ? 'auto' : Number(qualitySelect.value);
+  return activeQuality;
 }
 
 function setQuality(mode: QualityMode): void {
-  renderer?.setQuality(mode);
-  const value = mode === 'auto' ? 'auto' : String(mode);
+  activeQuality = mode === 'auto' ? 'auto' : Math.max(0.2, Math.min(1, Number.isFinite(mode) ? mode : 0.75));
+  renderer?.setQuality(activeQuality);
+  const value = activeQuality === 'auto' ? 'auto' : String(activeQuality);
   if (Array.from(qualitySelect.options).some((option) => option.value === value)) {
     qualitySelect.value = value;
   }
@@ -1088,9 +1109,7 @@ async function runBenchmark(
   if (spikeHuntRunning && source !== 'spike-hunt') throw new Error('Spike hunt already running');
 
   benchmarkRunning = true;
-  benchmarkButton.disabled = true;
-  huntButton.disabled = true;
-  benchmarkButton.style.cursor = 'wait';
+  setSamplingControlsActive(true);
   const previous = captureView();
   const warmupFrames = Math.max(0, Math.floor(options.warmupFrames ?? 30));
   const sampleFrames = Math.max(1, Math.floor(options.sampleFrames ?? 120));
@@ -1122,9 +1141,7 @@ async function runBenchmark(
     if (options.restoreQuality ?? true) setQuality(previous.quality);
     if (options.restoreRunning ?? true) setRunning(previous.running);
     benchmarkRunning = false;
-    benchmarkButton.disabled = false;
-    huntButton.disabled = false;
-    benchmarkButton.style.cursor = 'pointer';
+    setSamplingControlsActive(isTimedSamplingActive());
   }
 }
 
@@ -1215,9 +1232,7 @@ async function huntFrameSpike(options: FallfableSpikeHuntOptions = {}): Promise<
   if (spikeHuntRunning) throw new Error('Spike hunt already running');
 
   spikeHuntRunning = true;
-  huntButton.disabled = true;
-  benchmarkButton.disabled = true;
-  huntButton.style.cursor = 'wait';
+  setSamplingControlsActive(true);
 
   const previous = captureView();
   const fallbackQuality = previous.quality === 'auto' ? 0.75 : previous.quality;
@@ -1309,9 +1324,7 @@ async function huntFrameSpike(options: FallfableSpikeHuntOptions = {}): Promise<
   } finally {
     if (options.restoreQuality ?? true) setQuality(previous.quality);
     spikeHuntRunning = false;
-    huntButton.disabled = false;
-    benchmarkButton.disabled = false;
-    huntButton.style.cursor = 'pointer';
+    setSamplingControlsActive(isTimedSamplingActive());
   }
 }
 
@@ -1370,13 +1383,13 @@ const fallfableDebugApi: FallfableDebugApi = {
     return state;
   },
   freeze() {
-    setRunning(false);
+    setRunningFromControl(false);
   },
   resume() {
-    setRunning(true);
+    setRunningFromControl(true);
   },
   pause() {
-    setRunning(false);
+    setRunningFromControl(false);
   },
   preset(id: string) {
     applyPreset(id);
