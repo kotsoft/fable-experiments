@@ -1042,6 +1042,22 @@ export const PRESENT_WGSL = /* wgsl */ `
 @group(0) @binding(0) var src: texture_2d<f32>;
 @group(0) @binding(1) var srcSampler: sampler;
 
+struct PresentUniforms {
+  camPosition: vec4<f32>,
+  eTime: vec4<f32>,
+  eRight: vec4<f32>,
+  eUp: vec4<f32>,
+  eForward: vec4<f32>,
+  geo: vec4<f32>,
+  march: vec4<f32>,
+  disk: vec4<f32>,
+  disk2: vec4<f32>,
+  sky: vec4<f32>,
+  anim: vec4<f32>,
+};
+
+@group(0) @binding(2) var<uniform> u: PresentUniforms;
+
 struct VertexOutput {
   @builtin(position) position: vec4<f32>,
   @location(0) uv: vec2<f32>,
@@ -1071,7 +1087,8 @@ fn aces(x: vec3<f32>) -> vec3<f32> {
 
 @fragment
 fn fragment_main(@location(0) uv: vec2<f32>) -> @location(0) vec4<f32> {
-  let hdr = textureSampleLevel(src, srcSampler, uv, 0.0).rgb;
+  let exposure = max(u.anim.z, 0.0);
+  let hdr = textureSampleLevel(src, srcSampler, uv, 0.0).rgb * exposure;
   let mapped = aces(hdr);
   return vec4<f32>(pow(mapped, vec3<f32>(1.0 / 2.2)), 1.0);
 }

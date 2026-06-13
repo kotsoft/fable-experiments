@@ -21,6 +21,7 @@ export interface SceneFrame {
 export interface RendererOptions {
   spin: number;
   mass: number;
+  exposure: number;
   baseStep: number;
   escapeRadius: number;
   maxSteps: number;
@@ -661,6 +662,7 @@ export class FallfableRenderer {
       entries: [
         { binding: 0, resource: view },
         { binding: 1, resource: this.presentSampler },
+        { binding: 2, resource: { buffer: this.uniformBuffer } },
       ],
     });
     void frame;
@@ -753,7 +755,7 @@ export class FallfableRenderer {
     u[39] = o.sky.debugStatus ?? 0;
     u[40] = o.disk.animationScale;
     u[41] = o.disk.hotspotIntensity;
-    u[42] = 0;
+    u[42] = Math.max(o.exposure, 0);
     u[43] = 0;
   }
 }

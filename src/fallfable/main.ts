@@ -118,6 +118,20 @@ diagnosticSelect.style.cssText =
 });
 controls.appendChild(row('visualize', diagnosticSelect));
 
+const exposureControl = document.createElement('div');
+exposureControl.style.cssText = 'display:flex;gap:6px;align-items:center;';
+const exposureInput = document.createElement('input');
+exposureInput.type = 'range';
+exposureInput.min = '0.05';
+exposureInput.max = '2';
+exposureInput.step = '0.05';
+exposureInput.value = '1';
+exposureInput.style.cssText = 'width:104px;accent-color:#e8b873;';
+const exposureReadout = document.createElement('span');
+exposureReadout.style.cssText = 'color:#7d8290;min-width:42px;text-align:right;';
+exposureControl.append(exposureInput, exposureReadout);
+controls.appendChild(row('exposure', exposureControl));
+
 const freezeButton = controlButton('freeze');
 const huntButton = controlButton('hunt');
 const benchmarkButton = controlButton('bench');
@@ -197,6 +211,8 @@ let spikeHuntRunning = false;
 let latestBenchmarkResult: FallfableBenchmarkResult | null = null;
 let latestSpikeHuntResult: FallfableSpikeHuntResult | null = null;
 let latestBenchmarkSuiteResult: FallfableBenchmarkSuiteResult | null = null;
+
+setExposure(currentExposure());
 
 function setRunning(next: boolean): void {
   running = next;
@@ -288,6 +304,10 @@ diagnosticSelect.addEventListener('change', () => {
   setDiagnosticMode(currentDiagnosticMode());
 });
 
+exposureInput.addEventListener('input', () => {
+  setExposure(currentExposure());
+});
+
 freezeButton.addEventListener('click', () => {
   setRunning(!running);
 });
@@ -309,6 +329,7 @@ huntButton.addEventListener('click', () => {
 void FallfableRenderer.create(canvas, {
   spin: PARAMS.spin,
   mass: PARAMS.mass,
+  exposure: currentExposure(),
   baseStep: 0.035,
   escapeRadius: 30,
   maxSteps: 1200,
@@ -433,6 +454,7 @@ function updateReadout(atSingularity: boolean): void {
     (latestSpikeHuntResult
       ? `<div>hotspot: ${latestSpikeHuntResult.spikeGpuMs.toFixed(1)} ms spike · r ${latestSpikeHuntResult.radius.toFixed(2)}</div>`
       : '') +
+    `<div>exposure: ${currentExposure().toFixed(currentExposure() < 1 ? 2 : 1)}x</div>` +
     `<div style="color:#7d8290;margin-top:6px">${rendererMessage}</div>` +
     `<div style="color:#7d8290">drag view · map: press-drag-release to launch</div>`;
 }
@@ -449,6 +471,7 @@ interface FallfableViewSnapshot {
   pitch: number;
   quality: QualityMode;
   diagnosticMode: DiagnosticMode;
+  exposure: number;
 }
 
 interface FallfableBenchmarkOptions {
@@ -569,6 +592,18 @@ function setDiagnosticMode(mode: number): void {
   if (renderer) renderer.options.sky.debugStatus = normalized;
 }
 
+function currentExposure(): number {
+  const value = Number(exposureInput.value);
+  return Number.isFinite(value) ? Math.max(value, 0) : 1;
+}
+
+function setExposure(exposure: number): void {
+  const value = Math.max(0.05, Math.min(2, Number.isFinite(exposure) ? exposure : 1));
+  exposureInput.value = value.toFixed(2);
+  exposureReadout.textContent = `${value.toFixed(value < 1 ? 2 : 1)}x`;
+  if (renderer) renderer.options.exposure = value;
+}
+
 function diagnosticLabel(): string {
   return diagnosticSelect.options[diagnosticSelect.selectedIndex]?.textContent ?? 'normal';
 }
@@ -589,6 +624,7 @@ function captureView(): FallfableViewSnapshot {
     pitch,
     quality: currentQuality(),
     diagnosticMode: currentDiagnosticMode(),
+    exposure: currentExposure(),
   };
 }
 
@@ -599,6 +635,7 @@ function restoreView(snapshot: FallfableViewSnapshot): void {
   setRunning(snapshot.running);
   setQuality(snapshot.quality);
   setDiagnosticMode(snapshot.diagnosticMode);
+  setExposure(snapshot.exposure ?? 1);
   previewDirty = true;
 }
 
@@ -692,6 +729,7 @@ function benchmarkSnapshot(pointState: PlayerState, pitchBias = 0): FallfableVie
     pitch: Math.max(-1.35, Math.min(1.35, view.pitch + pitchBias)),
     quality: currentQuality(),
     diagnosticMode: currentDiagnosticMode(),
+    exposure: currentExposure(),
   };
 }
 
@@ -1026,6 +1064,7 @@ interface FallfableDebugApi {
   pause(): void;
   preset(id: string): void;
   setQuality(mode: QualityMode): void;
+  setExposure(exposure: number): void;
   setDiagnosticMode(mode: number): void;
   diagnosticMode(): DiagnosticMode;
   benchmark(options?: FallfableBenchmarkOptions): Promise<FallfableBenchmarkResult>;
@@ -1067,6 +1106,7 @@ const fallfableDebugApi: FallfableDebugApi = {
     applyPreset(id);
   },
   setQuality,
+  setExposure,
   setDiagnosticMode,
   diagnosticMode: currentDiagnosticMode,
   benchmark: runBenchmark,
@@ -1154,6 +1194,12 @@ async function runDevCommand(
         const mode = diagnosticModeFromParams(params);
         api.setDiagnosticMode(mode);
         result = { mode, snapshot: api.snapshot() };
+        break;
+      }
+      case 'exposure': {
+        const exposure = numberParam(params, 'value') ?? numberParam(params, 'exposure') ?? 1;
+        api.setExposure(exposure);
+        result = api.snapshot();
         break;
       }
       case 'freeze':
