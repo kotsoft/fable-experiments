@@ -19,69 +19,316 @@ import { FallfableRenderer, type RendererFrameTiming } from './renderer';
 
 // ----------------------------------------------------------------- layout
 
+document.body.classList.add('fallfable-page');
+const layoutStyle = document.createElement('style');
+layoutStyle.textContent = `
+  .fallfable-page {
+    margin: 0;
+    background: #000;
+    overflow: hidden;
+    overscroll-behavior: none;
+    touch-action: none;
+  }
+  .fallfable-canvas {
+    position: fixed;
+    inset: 0;
+    width: 100vw;
+    height: 100dvh;
+    display: block;
+    background: #000;
+    cursor: grab;
+    touch-action: none;
+    user-select: none;
+  }
+  .fallfable-panel {
+    position: fixed;
+    right: max(14px, env(safe-area-inset-right));
+    top: max(14px, env(safe-area-inset-top));
+    display: grid;
+    gap: 6px;
+    justify-items: end;
+    color: #c9cdd6;
+    font: 12px ui-monospace, SFMono-Regular, Consolas, monospace;
+    user-select: none;
+    z-index: 2;
+  }
+  .fallfable-glass {
+    background: #080910cc;
+    border: 1px solid #23262e;
+    border-radius: 6px;
+    backdrop-filter: blur(6px);
+  }
+  .fallfable-summary {
+    justify-self: end;
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    background: #080910b8;
+    border: 1px solid #23262e;
+    border-radius: 6px;
+    padding: 5px 11px;
+    color: #c9cdd6;
+    cursor: pointer;
+    font: inherit;
+    backdrop-filter: blur(6px);
+  }
+  .fallfable-details {
+    display: none;
+    grid-template-rows: auto auto;
+    gap: 6px;
+    justify-items: stretch;
+  }
+  .fallfable-readout {
+    padding: 9px 11px;
+    line-height: 1.6;
+    min-width: 300px;
+  }
+  .fallfable-controls {
+    padding: 9px 11px;
+    display: grid;
+    gap: 8px;
+  }
+  .fallfable-presets {
+    position: fixed;
+    left: max(14px, env(safe-area-inset-left));
+    right: max(329px, calc(315px + env(safe-area-inset-right)));
+    bottom: max(14px, env(safe-area-inset-bottom));
+    transform: none;
+    display: flex;
+    gap: 6px;
+    flex-wrap: nowrap;
+    justify-content: flex-start;
+    max-width: none;
+    overflow-x: auto;
+    scrollbar-width: none;
+    -webkit-overflow-scrolling: touch;
+    z-index: 2;
+    font: 11px ui-monospace, SFMono-Regular, Consolas, monospace;
+    user-select: none;
+  }
+  .fallfable-presets::-webkit-scrollbar {
+    display: none;
+  }
+  .fallfable-preset {
+    background: #080910b8;
+    color: #c9cdd6;
+    border: 1px solid #23262e;
+    border-radius: 999px;
+    padding: 5px 11px;
+    font: inherit;
+    cursor: pointer;
+    backdrop-filter: blur(6px);
+    white-space: nowrap;
+  }
+  .fallfable-row {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    justify-content: space-between;
+  }
+  .fallfable-select,
+  .fallfable-button {
+    background: #171a22;
+    color: #e6eaf4;
+    border: 1px solid #3b4150;
+    border-radius: 5px;
+    padding: 4px 6px;
+    font: 12px ui-monospace, monospace;
+  }
+  .fallfable-button {
+    cursor: pointer;
+  }
+  .fallfable-map {
+    position: fixed;
+    right: max(14px, env(safe-area-inset-right));
+    bottom: max(14px, env(safe-area-inset-bottom));
+    background: #08091040;
+    border-color: #3b415088;
+    border-radius: 50%;
+    overflow: hidden;
+    box-shadow: 0 10px 30px #0008, inset 0 0 0 1px #ffffff0f;
+  }
+  .fallfable-map canvas {
+    border-radius: 50%;
+  }
+
+  @media (hover: none) and (pointer: coarse) {
+    .fallfable-summary,
+    .fallfable-button,
+    .fallfable-select,
+    .fallfable-preset {
+      min-height: 34px;
+    }
+  }
+
+  @media (max-width: 720px), (max-height: 560px) {
+    .fallfable-canvas {
+      height: 100dvh !important;
+    }
+    .fallfable-presets {
+      top: max(8px, env(safe-area-inset-top));
+      bottom: auto !important;
+      left: 0 !important;
+      right: 0 !important;
+      transform: none !important;
+      max-width: none !important;
+      justify-content: flex-start !important;
+      flex-wrap: nowrap !important;
+      overflow-x: auto;
+      padding: 0 10px 8px;
+      scrollbar-width: none;
+      -webkit-overflow-scrolling: touch;
+    }
+    .fallfable-presets::-webkit-scrollbar {
+      display: none;
+    }
+    .fallfable-preset {
+      padding: 8px 12px !important;
+      flex: 0 0 auto;
+    }
+    .fallfable-panel {
+      top: auto !important;
+      left: max(10px, env(safe-area-inset-left)) !important;
+      right: max(10px, env(safe-area-inset-right)) !important;
+      bottom: max(10px, env(safe-area-inset-bottom)) !important;
+      justify-items: stretch !important;
+      gap: 7px !important;
+      max-height: calc(100dvh - 64px);
+    }
+    .fallfable-summary {
+      order: 2;
+      width: 100% !important;
+      justify-content: flex-start !important;
+      padding: 9px 12px !important;
+      box-sizing: border-box;
+    }
+    .fallfable-summary-text {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .fallfable-details {
+      order: 1;
+      grid-template-rows: auto auto auto !important;
+      max-height: min(calc(100dvh - 118px), 560px);
+      overflow: auto;
+      padding-right: 2px;
+      -webkit-overflow-scrolling: touch;
+    }
+    .fallfable-readout,
+    .fallfable-controls {
+      min-width: 0 !important;
+      width: 100% !important;
+      box-sizing: border-box;
+      padding: 10px 12px !important;
+    }
+    .fallfable-readout {
+      font-size: 11px;
+    }
+    .fallfable-row {
+      display: grid !important;
+      grid-template-columns: minmax(82px, auto) minmax(0, 1fr);
+      gap: 8px !important;
+    }
+    .fallfable-select,
+    .fallfable-button {
+      font-size: 12px !important;
+      padding: 7px 8px !important;
+    }
+    .fallfable-select {
+      width: 100%;
+      min-width: 0;
+    }
+    .fallfable-controls input[type="range"] {
+      width: 100% !important;
+      min-width: 0;
+    }
+    .fallfable-exposure,
+    .fallfable-benchmark-controls {
+      width: 100%;
+    }
+    .fallfable-benchmark-controls {
+      display: grid !important;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+    }
+    .fallfable-map {
+      position: static;
+      order: 1;
+      justify-self: end;
+      width: min(46vw, 172px);
+      max-width: 172px;
+    }
+    .fallfable-panel.is-open .fallfable-map {
+      display: none;
+    }
+    .fallfable-map canvas {
+      width: 100% !important;
+      height: auto !important;
+      aspect-ratio: 1;
+    }
+  }
+
+  @media (max-width: 420px) {
+    .fallfable-map {
+      width: min(54vw, 158px);
+    }
+    .fallfable-details {
+      max-height: 76dvh;
+    }
+  }
+`;
+document.head.appendChild(layoutStyle);
+
 const canvas = document.createElement('canvas');
-canvas.style.cssText =
-  'position:fixed;inset:0;width:100vw;height:100vh;display:block;background:#000;cursor:grab;' +
-  'touch-action:none;user-select:none;';
-document.body.style.margin = '0';
-document.body.style.background = '#000';
+canvas.className = 'fallfable-canvas';
 document.body.appendChild(canvas);
 
 const panel = document.createElement('section');
-panel.style.cssText =
-  'position:fixed;right:14px;bottom:14px;display:grid;gap:6px;justify-items:end;color:#c9cdd6;' +
-  'font:12px ui-monospace,SFMono-Regular,Consolas,monospace;user-select:none;z-index:2;';
+panel.className = 'fallfable-panel';
 document.body.appendChild(panel);
 
 // Slim status chip; click to expand the full stats and controls.
 let statsOpen = false;
 const summaryBar = document.createElement('button');
-summaryBar.style.cssText =
-  'display:flex;gap:8px;align-items:center;background:#080910b8;border:1px solid #23262e;' +
-  'border-radius:6px;padding:5px 11px;color:#c9cdd6;cursor:pointer;font:inherit;' +
-  'backdrop-filter:blur(6px);';
+summaryBar.className = 'fallfable-summary';
+summaryBar.setAttribute('aria-expanded', 'false');
 const summaryChevron = document.createElement('span');
 summaryChevron.textContent = '▸';
 summaryChevron.style.cssText = 'color:#7d8290;';
 const summaryText = document.createElement('span');
+summaryText.className = 'fallfable-summary-text';
 summaryText.textContent = 'falling';
 summaryBar.append(summaryChevron, summaryText);
 panel.appendChild(summaryBar);
 
 const details = document.createElement('div');
-details.style.cssText = 'display:none;grid-template-rows:auto auto;gap:6px;justify-items:stretch;';
+details.className = 'fallfable-details';
 panel.appendChild(details);
 
 summaryBar.addEventListener('click', () => {
   statsOpen = !statsOpen;
+  panel.classList.toggle('is-open', statsOpen);
+  summaryBar.setAttribute('aria-expanded', String(statsOpen));
   summaryChevron.textContent = statsOpen ? '▾' : '▸';
   details.style.display = statsOpen ? 'grid' : 'none';
 });
 
 const readout = document.createElement('div');
-readout.style.cssText =
-  'background:#080910cc;border:1px solid #23262e;border-radius:6px;padding:9px 11px;' +
-  'backdrop-filter:blur(6px);line-height:1.6;min-width:300px;';
+readout.className = 'fallfable-readout fallfable-glass';
 details.appendChild(readout);
 
 const controls = document.createElement('div');
-controls.style.cssText =
-  'background:#080910cc;border:1px solid #23262e;border-radius:6px;padding:9px 11px;' +
-  'display:grid;gap:8px;backdrop-filter:blur(6px);';
+controls.className = 'fallfable-controls fallfable-glass';
 details.appendChild(controls);
 
 // Presets live in their own slim bar along the bottom of the screen.
 const presetRow = document.createElement('nav');
-presetRow.style.cssText =
-  'position:fixed;left:50%;bottom:14px;transform:translateX(-50%);display:flex;gap:6px;' +
-  'flex-wrap:wrap;justify-content:center;max-width:min(92vw,760px);z-index:2;' +
-  'font:11px ui-monospace,SFMono-Regular,Consolas,monospace;user-select:none;';
+presetRow.className = 'fallfable-presets';
 document.body.appendChild(presetRow);
 
 const qualitySelect = document.createElement('select');
-qualitySelect.style.cssText =
-  'background:#171a22;color:#e6eaf4;border:1px solid #3b4150;border-radius:5px;padding:4px 6px;' +
-  'font:12px ui-monospace,monospace;';
+qualitySelect.className = 'fallfable-select';
 [
   ['auto', 'auto'],
   ['half', '0.5'],
@@ -96,9 +343,7 @@ qualitySelect.style.cssText =
 controls.appendChild(row('resolution', qualitySelect));
 
 const diagnosticSelect = document.createElement('select');
-diagnosticSelect.style.cssText =
-  'background:#171a22;color:#e6eaf4;border:1px solid #3b4150;border-radius:5px;padding:4px 6px;' +
-  'font:12px ui-monospace,monospace;';
+diagnosticSelect.className = 'fallfable-select';
 [
   ['normal', '0'],
   ['term', '1'],
@@ -119,6 +364,7 @@ diagnosticSelect.style.cssText =
 controls.appendChild(row('visualize', diagnosticSelect));
 
 const exposureControl = document.createElement('div');
+exposureControl.className = 'fallfable-exposure';
 exposureControl.style.cssText = 'display:flex;gap:6px;align-items:center;';
 const exposureInput = document.createElement('input');
 exposureInput.type = 'range';
@@ -136,6 +382,7 @@ const freezeButton = controlButton('freeze');
 const huntButton = controlButton('hunt');
 const benchmarkButton = controlButton('bench');
 const benchmarkControls = document.createElement('div');
+benchmarkControls.className = 'fallfable-benchmark-controls';
 benchmarkControls.style.cssText = 'display:flex;gap:6px;';
 benchmarkControls.append(freezeButton, huntButton, benchmarkButton);
 controls.appendChild(row('measure', benchmarkControls));
@@ -170,14 +417,12 @@ tutorialLink.style.cssText = 'color:#e8b873;text-decoration:none;justify-self:en
 controls.appendChild(tutorialLink);
 
 const mapBox = document.createElement('div');
-mapBox.style.cssText =
-  'background:#080910cc;border:1px solid #23262e;border-radius:6px;overflow:hidden;' +
-  'box-shadow:0 10px 30px #0008;';
+mapBox.className = 'fallfable-map fallfable-glass';
 panel.appendChild(mapBox);
 
 function row(text: string, control: HTMLElement): HTMLElement {
   const label = document.createElement('label');
-  label.style.cssText = 'display:flex;gap:8px;align-items:center;justify-content:space-between;';
+  label.className = 'fallfable-row';
   const span = document.createElement('span');
   span.textContent = text;
   label.append(span, control);
@@ -187,9 +432,7 @@ function row(text: string, control: HTMLElement): HTMLElement {
 function controlButton(text: string): HTMLButtonElement {
   const button = document.createElement('button');
   button.textContent = text;
-  button.style.cssText =
-    'background:#171a22;color:#e6eaf4;border:1px solid #3b4150;border-radius:5px;' +
-    'padding:4px 7px;font:12px ui-monospace,monospace;cursor:pointer;';
+  button.className = 'fallfable-button';
   return button;
 }
 
@@ -199,6 +442,7 @@ let state: PlayerState = PRESETS[0].create();
 let running = true;
 let yaw = Math.PI * 1.25; // look inward from the plunge preset
 let pitch = 0;
+let trajectoryCameraFollow = false;
 let preview: PreviewPoint[] = [];
 let previewDirty = true;
 let lastPreviewAt = 0;
@@ -229,9 +473,7 @@ for (const preset of PRESETS) {
   const button = document.createElement('button');
   button.textContent = preset.label;
   button.title = preset.description;
-  button.style.cssText =
-    'background:#080910b8;color:#c9cdd6;border:1px solid #23262e;border-radius:999px;' +
-    'padding:5px 11px;font:inherit;cursor:pointer;backdrop-filter:blur(6px);';
+  button.className = 'fallfable-preset';
   button.addEventListener('mouseenter', () => { button.style.borderColor = '#e8b873'; });
   button.addEventListener('mouseleave', () => { button.style.borderColor = '#23262e'; });
   button.addEventListener('click', () => applyPreset(preset.id));
@@ -244,6 +486,7 @@ function applyPreset(id: string): void {
   state = preset.create();
   setExposure(preset.exposure ?? 1);
   setRunning(true);
+  trajectoryCameraFollow = false;
   faceInward();
   previewDirty = true;
 }
@@ -254,18 +497,40 @@ function faceInward(): void {
   pitch = -Math.atan2(state.position.z, Math.max(rho, 0.3)) * 0.8;
 }
 
+function faceLaunchHeading(heading: PreviewPoint | null): void {
+  if (!heading || Math.hypot(heading.x, heading.y) < 1e-6) {
+    faceInward();
+    return;
+  }
+  yaw = Math.atan2(heading.y, heading.x);
+  pitch = 0;
+}
+
+function followTrajectoryCamera(dt: number): void {
+  const u = fourVelocity(state);
+  const planarSpeed = Math.hypot(u.x, u.y);
+  if (planarSpeed < 1e-6) return;
+  const targetYaw = Math.atan2(u.y, u.x);
+  const targetPitch = Math.max(-1.2, Math.min(1.2, Math.atan2(u.z, planarSpeed)));
+  const alpha = 1 - Math.exp(-Math.max(dt, 0) * 4.5);
+  yaw += Math.atan2(Math.sin(targetYaw - yaw), Math.cos(targetYaw - yaw)) * alpha;
+  pitch += (targetPitch - pitch) * alpha;
+}
+
 const planner = createPlanner(mapBox, {
   launchHeight: () => Number(heightInput.value),
-  onPreview(next) {
+  onPreview(next, heading) {
     state = next;
     setRunning(false);
-    faceInward();
+    trajectoryCameraFollow = false;
+    faceLaunchHeading(heading);
     previewDirty = true;
   },
-  onCommit(next) {
+  onCommit(next, heading) {
     state = next;
     setRunning(true);
-    faceInward();
+    trajectoryCameraFollow = Boolean(heading);
+    faceLaunchHeading(heading);
     previewDirty = true;
   },
 });
@@ -276,6 +541,7 @@ let looking = false;
 let lookX = 0;
 let lookY = 0;
 canvas.addEventListener('pointerdown', (event) => {
+  trajectoryCameraFollow = false;
   looking = true;
   lookX = event.clientX;
   lookY = event.clientY;
@@ -356,6 +622,7 @@ void FallfableRenderer.create(canvas, {
 }).then((created) => {
   renderer = created;
   setDiagnosticMode(currentDiagnosticMode());
+  setExposure(currentExposure());
   rendererMessage = created ? 'past-directed Kerr GRRT · analytic geodesics' : 'WebGPU is unavailable in this browser';
 });
 
@@ -391,6 +658,7 @@ function frame(nowMs: number): void {
       ? Math.max(0.08, (state.r - INNER_HORIZON) / (HORIZON * 1.5 - INNER_HORIZON))
       : 1;
     state = stepPlayer(state, dt * Number(paceInput.value) * insidePace);
+    if (trajectoryCameraFollow) followTrajectoryCamera(dt);
     if (nowMs - lastPreviewAt > 300) previewDirty = true;
   }
 
@@ -470,6 +738,7 @@ interface FallfableViewSnapshot {
   running: boolean;
   yaw: number;
   pitch: number;
+  trajectoryCameraFollow?: boolean;
   quality: QualityMode;
   diagnosticMode: DiagnosticMode;
   exposure: number;
@@ -623,6 +892,7 @@ function captureView(): FallfableViewSnapshot {
     running,
     yaw,
     pitch,
+    trajectoryCameraFollow,
     quality: currentQuality(),
     diagnosticMode: currentDiagnosticMode(),
     exposure: currentExposure(),
@@ -633,6 +903,7 @@ function restoreView(snapshot: FallfableViewSnapshot): void {
   state = clonePlayerState(snapshot.state);
   yaw = snapshot.yaw;
   pitch = snapshot.pitch;
+  trajectoryCameraFollow = snapshot.trajectoryCameraFollow ?? false;
   setRunning(snapshot.running);
   setQuality(snapshot.quality);
   setDiagnosticMode(snapshot.diagnosticMode);
@@ -1249,7 +1520,7 @@ function diagnosticModeFromParams(params: URLSearchParams): DiagnosticMode {
   if (raw === 'normal') return 0;
   if (raw === 'term' || raw === 'termination') return 1;
   if (raw === 'cost') return 2;
-  if (raw === 'combined' || raw === 'cost+term') return 3;
+  if (raw === 'combined' || raw === 'cost+term' || raw === 'cost term') return 3;
   if (raw === 'class' || raw === 'classifier' || raw === 'grid-classifier') return 4;
   if (raw === 'tile' || raw === 'tile-classifier' || raw === 'adaptive-mask') return 5;
   if (raw === 'shadow' || raw === 'shadow-skip' || raw === 'shadow-probe') return 6;

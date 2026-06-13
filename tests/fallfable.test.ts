@@ -181,6 +181,34 @@ describe('fallfable observers and launches', () => {
     expect(phi).toBeGreaterThan(0.02);
   });
 
+  it('does not leak non-finite states from aggressive tangent flybys', () => {
+    let state = launchLocal({
+      r: HORIZON * 1.08,
+      phi: Math.PI / 2,
+      betaRadial: 0,
+      betaTangential: 0.92,
+    });
+
+    for (let i = 0; i < 120; i++) {
+      state = stepPlayer(state, 0.006);
+      expect(Number.isFinite(state.r)).toBe(true);
+      expect(Number.isFinite(state.tau)).toBe(true);
+      for (const value of [
+        state.position.t,
+        state.position.x,
+        state.position.y,
+        state.position.z,
+        state.momentum.t,
+        state.momentum.x,
+        state.momentum.y,
+        state.momentum.z,
+      ]) {
+        expect(Number.isFinite(value)).toBe(true);
+      }
+      if (state.ended) break;
+    }
+  });
+
   it('holds a circular orbit at r = 4 for a full period', () => {
     const r = 4;
     const p: Vec3 = { x: Math.sqrt(r * r + PARAMS.spin * PARAMS.spin), y: 0, z: 0 };

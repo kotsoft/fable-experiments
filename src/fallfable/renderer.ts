@@ -75,6 +75,7 @@ const SKY_ATLAS_HEIGHT = 512;
 const DISK_NOISE_WIDTH = 256;
 const DISK_NOISE_HEIGHT = 256;
 const DISK_NOISE_DEPTH = 64;
+const DISK_NOISE_BYTE_SIZE = DISK_NOISE_WIDTH * DISK_NOISE_HEIGHT * DISK_NOISE_DEPTH;
 
 // The flag namespaces are runtime globals the TS lib in this project does not
 // declare; fall back to the spec-fixed bit values when they are absent.
@@ -85,6 +86,7 @@ const BUFFER_USAGE: GpuFlags = gpuGlobals.GPUBufferUsage ?? {
   COPY_SRC: 0x04,
   COPY_DST: 0x08,
   UNIFORM: 0x40,
+  STORAGE: 0x80,
   QUERY_RESOLVE: 0x200,
 };
 const MAP_MODE: GpuFlags = gpuGlobals.GPUMapMode ?? { READ: 0x01 };
@@ -682,8 +684,8 @@ export class FallfableRenderer {
       label,
       dimension: '3d',
       size: { width: DISK_NOISE_WIDTH, height: DISK_NOISE_HEIGHT, depthOrArrayLayers: DISK_NOISE_DEPTH },
-      format: 'rgba8unorm',
-      usage: TEXTURE_USAGE.STORAGE_BINDING | TEXTURE_USAGE.TEXTURE_BINDING,
+      format: 'r8unorm',
+      usage: TEXTURE_USAGE.COPY_DST | TEXTURE_USAGE.TEXTURE_BINDING,
     });
   }
 
@@ -704,19 +706,30 @@ export class FallfableRenderer {
   }
 
   private generateDiskNoise(): void {
+    const packedBuffer = this.device.createBuffer({
+      label: 'fallfable packed disk noise staging',
+      size: DISK_NOISE_BYTE_SIZE,
+      usage: BUFFER_USAGE.STORAGE | BUFFER_USAGE.COPY_SRC,
+    });
     const bindGroup = this.device.createBindGroup({
       layout: this.diskNoisePipeline.getBindGroupLayout(0),
       entries: [
-        { binding: 0, resource: this.diskNoiseTexture.createView({ dimension: '3d' }) },
+        { binding: 0, resource: { buffer: packedBuffer } },
       ],
     });
     const encoder = this.device.createCommandEncoder();
     const pass = encoder.beginComputePass();
     pass.setPipeline(this.diskNoisePipeline);
     pass.setBindGroup(0, bindGroup);
-    pass.dispatchWorkgroups(Math.ceil(DISK_NOISE_WIDTH / 4), Math.ceil(DISK_NOISE_HEIGHT / 4), Math.ceil(DISK_NOISE_DEPTH / 4));
+    pass.dispatchWorkgroups(Math.ceil(DISK_NOISE_WIDTH / 16), Math.ceil(DISK_NOISE_HEIGHT / 4), Math.ceil(DISK_NOISE_DEPTH / 4));
     pass.end();
+    encoder.copyBufferToTexture(
+      { buffer: packedBuffer, bytesPerRow: DISK_NOISE_WIDTH, rowsPerImage: DISK_NOISE_HEIGHT },
+      { texture: this.diskNoiseTexture },
+      { width: DISK_NOISE_WIDTH, height: DISK_NOISE_HEIGHT, depthOrArrayLayers: DISK_NOISE_DEPTH },
+    );
     this.device.queue.submit([encoder.finish()]);
+    void this.device.queue.onSubmittedWorkDone().then(() => packedBuffer.destroy(), () => packedBuffer.destroy());
   }
 
   private packUniforms(frame: SceneFrame): void {

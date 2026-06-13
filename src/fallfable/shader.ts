@@ -173,9 +173,10 @@ export const DISK_NOISE_WGSL = /* wgsl */ `
 const DISK_NOISE_WIDTH = 256u;
 const DISK_NOISE_HEIGHT = 256u;
 const DISK_NOISE_DEPTH = 64u;
-const DISK_NOISE_OCTAVES = 5;
+const DISK_NOISE_PACKED_WIDTH = DISK_NOISE_WIDTH / 4u;
+const DISK_NOISE_OCTAVES = 10;
 
-@group(0) @binding(0) var noiseOut: texture_storage_3d<rgba8unorm, write>;
+@group(0) @binding(0) var<storage, read_write> noiseOut: array<u32>;
 
 fn wrap_index(value: i32, period: u32) -> u32 {
   let p = i32(period);
@@ -233,14 +234,23 @@ fn periodic_fbm3(p: vec3<f32>) -> f32 {
   return total;
 }
 
+fn quantize_noise(p: vec3<f32>) -> u32 {
+  return u32(round(clamp(periodic_fbm3(p), 0.0, 1.0) * 255.0));
+}
+
 @compute @workgroup_size(4, 4, 4)
 fn main(@builtin(global_invocation_id) id: vec3<u32>) {
-  if (id.x >= DISK_NOISE_WIDTH || id.y >= DISK_NOISE_HEIGHT || id.z >= DISK_NOISE_DEPTH) {
+  if (id.x >= DISK_NOISE_PACKED_WIDTH || id.y >= DISK_NOISE_HEIGHT || id.z >= DISK_NOISE_DEPTH) {
     return;
   }
-  let p = vec3<f32>(f32(id.x), f32(id.y), f32(id.z)) + vec3<f32>(0.5);
-  let noise = clamp(periodic_fbm3(p), 0.0, 1.0);
-  textureStore(noiseOut, vec3<i32>(id), vec4<f32>(noise, 0.0, 0.0, 1.0));
+  let x = id.x * 4u;
+  let yz = vec2<f32>(f32(id.y), f32(id.z)) + vec2<f32>(0.5);
+  let n0 = quantize_noise(vec3<f32>(f32(x + 0u) + 0.5, yz.x, yz.y));
+  let n1 = quantize_noise(vec3<f32>(f32(x + 1u) + 0.5, yz.x, yz.y));
+  let n2 = quantize_noise(vec3<f32>(f32(x + 2u) + 0.5, yz.x, yz.y));
+  let n3 = quantize_noise(vec3<f32>(f32(x + 3u) + 0.5, yz.x, yz.y));
+  let wordIndex = (id.z * DISK_NOISE_HEIGHT + id.y) * DISK_NOISE_PACKED_WIDTH + id.x;
+  noiseOut[wordIndex] = n0 | (n1 << 8u) | (n2 << 16u) | (n3 << 24u);
 }
 `;
 
@@ -269,6 +279,7 @@ struct Uniforms {
 @group(0) @binding(7) var diskNoiseSampler: sampler;
 @group(0) @binding(8) var diskNoise: texture_3d<f32>;
 const DISK_NOISE_PERIOD = vec3<f32>(256.0, 256.0, 64.0);
+const DISK_TURBULENCE_FREQUENCY = 10.0;
 
 // ---------------------------------------------------------------- geometry
 
@@ -484,7 +495,7 @@ fn disk_turbulence(
     cos(spiralAz) * arcRadius,
     sin(spiralAz) * arcRadius + q.z
   );
-  return textureSampleLevel(diskNoise, diskNoiseSampler, fract(noiseP * (4.4 / inner) / DISK_NOISE_PERIOD), 0.0).r;
+  return textureSampleLevel(diskNoise, diskNoiseSampler, fract(noiseP * (DISK_TURBULENCE_FREQUENCY / inner) / DISK_NOISE_PERIOD), 0.0).r;
 }
 
 fn disk_sample(pos: vec4<f32>, mom: vec4<f32>, dl: f32) -> DiskSample {
@@ -607,9 +618,10 @@ fn trace_result_mode(px: vec2<f32>, dims: vec2<f32>, shadeSky: bool, maxStepScal
     1.0 - 2.0 * (px.y + 0.5) / dims.y
   );
   let n = normalize(vec3<f32>(ndc * u.march.z, 1.0));
-  // Per-pixel step jitter decorrelates volumetric sampling phases between
-  // neighboring rays, turning coherent slab banding into invisible noise.
-  let stepJitter = 0.72 + 0.56 * hash31(vec3<f32>(px.x, px.y, 0.37));
+  // Jitter only the disk-slab sampling cadence. Applying it to every
+  // weak-field sky step makes pinpoint stars expose tiny per-pixel integration
+  // differences when the camera is far from the hole and looking away.
+  let diskStepJitter = 0.72 + 0.56 * hash31(vec3<f32>(px.x, px.y, 0.37));
 
   // Past-directed momentum of the photon arriving from view direction n:
   // q = -e_t + n_x e_right + n_y e_up + n_z e_forward, lowered. Then
@@ -678,10 +690,10 @@ fn trace_result_mode(px: vec2<f32>, dims: vec2<f32>, shadeSky: bool, maxStepScal
       break;
     }
 
-    var h = baseStep * stepJitter * clamp(r * 0.55, 0.16, 6.0) * min(1.0, m0 / mscale);
+    var h = baseStep * clamp(r * 0.55, 0.16, 6.0) * min(1.0, m0 / mscale);
     let scaleHeight = u.disk2.z * r;
     if (r > u.march.y * 2.0 && r < u.disk.y * 1.1 && abs(p.z) < 4.0 * scaleHeight) {
-      h = min(h, (0.6 * scaleHeight + 0.015) * stepJitter);
+      h = min(h, (0.6 * scaleHeight + 0.015) * diskStepJitter);
       let sample = disk_sample(state.position, state.momentum, h * length(d1.velocity.yzw));
       if (sample.opacity > 0.0 || sample.radiance.x + sample.radiance.y + sample.radiance.z > 0.0) {
         let diskLum = dot(sample.radiance, vec3<f32>(0.2126, 0.7152, 0.0722));
