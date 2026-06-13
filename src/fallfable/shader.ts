@@ -618,9 +618,9 @@ fn trace_result_mode(px: vec2<f32>, dims: vec2<f32>, shadeSky: bool, maxStepScal
     1.0 - 2.0 * (px.y + 0.5) / dims.y
   );
   let n = normalize(vec3<f32>(ndc * u.march.z, 1.0));
-  // Jitter only the disk-slab sampling cadence. Applying it to every
-  // weak-field sky step makes pinpoint stars expose tiny per-pixel integration
-  // differences when the camera is far from the hole and looking away.
+  // Jitter only disk-slab sampling. Applying jitter to every weak-field sky
+  // step makes pinpoint stars expose tiny per-pixel integration differences
+  // when the camera is far from the hole and looking away.
   let diskStepJitter = 0.72 + 0.56 * hash31(vec3<f32>(px.x, px.y, 0.37));
 
   // Past-directed momentum of the photon arriving from view direction n:
@@ -694,7 +694,11 @@ fn trace_result_mode(px: vec2<f32>, dims: vec2<f32>, shadeSky: bool, maxStepScal
     let scaleHeight = u.disk2.z * r;
     if (r > u.march.y * 2.0 && r < u.disk.y * 1.1 && abs(p.z) < 4.0 * scaleHeight) {
       h = min(h, (0.6 * scaleHeight + 0.015) * diskStepJitter);
-      let sample = disk_sample(state.position, state.momentum, h * length(d1.velocity.yzw));
+      let samplePhase = 0.18 + 0.64 * hash31(vec3<f32>(px.x + 17.13, px.y + 5.71, f32(step) + 0.91));
+      let sampleH = h * samplePhase;
+      let samplePos = state.position + d1.velocity * sampleH;
+      let sampleMom = state.momentum + vec4<f32>(0.0, d1.force) * sampleH;
+      let sample = disk_sample(samplePos, sampleMom, h * length(d1.velocity.yzw));
       if (sample.opacity > 0.0 || sample.radiance.x + sample.radiance.y + sample.radiance.z > 0.0) {
         let diskLum = dot(sample.radiance, vec3<f32>(0.2126, 0.7152, 0.0722));
         diskSignal = min(1.0, diskSignal + sample.opacity * 2.0 + diskLum * 0.02);
