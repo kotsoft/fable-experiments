@@ -307,7 +307,10 @@ export class FallfableRenderer {
 
     const diagnosticMode = Math.floor(this.options.sky.debugStatus ?? 0);
     const diagnosticRequestedSkyProbe = diagnosticMode === 8 || diagnosticMode === 9;
-    const useSkyProbe = this.shouldUseAdaptiveSky(frame);
+    if (!diagnosticRequestedSkyProbe) {
+      this.adaptiveSkyActive = false;
+    }
+    const useSkyProbe = diagnosticRequestedSkyProbe && this.shouldUseAdaptiveSky(frame);
     this.adaptiveSkyActive = useSkyProbe;
     this.packUniforms(frame);
     if (diagnosticRequestedSkyProbe && !useSkyProbe) {

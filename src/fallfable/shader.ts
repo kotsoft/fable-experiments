@@ -82,9 +82,9 @@ fn fbm3(p: vec3<f32>) -> f32 {
 }
 
 fn star_falloff(ang2: f32) -> f32 {
-  let x = clamp(1.0 - ang2 * 110.0, 0.0, 1.0);
-  let s = x * x * (3.0 - 2.0 * x);
-  return s * s;
+  let r = sqrt(max(ang2 * 36.0, 0.0));
+  let x = clamp(1.0 - r, 0.0, 1.0);
+  return x * x;
 }
 
 fn star_layer(dir: vec3<f32>, scale: f32, density: f32, gain: f32, gshift: f32) -> vec3<f32> {
