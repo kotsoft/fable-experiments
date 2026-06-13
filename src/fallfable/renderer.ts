@@ -8,7 +8,7 @@
 // sampler and tonemaps at display resolution.
 
 import { ksRadius, type Tetrad, type Vec4 } from './kerr';
-import { PRESENT_WGSL, SKY_ATLAS_WGSL, TRACE_WGSL } from './shader';
+import { DISK_NOISE_WGSL, PRESENT_WGSL, SKY_ATLAS_WGSL, TRACE_WGSL } from './shader';
 
 export interface SceneFrame {
   /** Camera coordinate time (rays inherit it, so disk rotation sees delays). */
@@ -71,8 +71,9 @@ const TIMESTAMP_QUERY_COUNT = 8;
 const TIMESTAMP_RESULT_BYTES = TIMESTAMP_QUERY_COUNT * 8;
 const SKY_ATLAS_WIDTH = 1024;
 const SKY_ATLAS_HEIGHT = 512;
-const DISK_NOISE_SIZE = 64;
-const DISK_NOISE_BYTES_PER_ROW = 256;
+const DISK_NOISE_WIDTH = 256;
+const DISK_NOISE_HEIGHT = 256;
+const DISK_NOISE_DEPTH = 64;
 
 // The flag namespaces are runtime globals the TS lib in this project does not
 // declare; fall back to the spec-fixed bit values when they are absent.
@@ -118,6 +119,7 @@ export class FallfableRenderer {
   private adaptiveFillPipeline: GPUComputePipeline;
   private adaptiveTracePipeline: GPUComputePipeline;
   private skyPipeline: GPUComputePipeline;
+  private diskNoisePipeline: GPUComputePipeline;
   private presentPipeline: GPURenderPipeline;
   private uniformBuffer: GPUBuffer;
   private presentSampler: GPUSampler;
@@ -200,6 +202,10 @@ export class FallfableRenderer {
     this.skyPipeline = device.createComputePipeline({
       layout: 'auto',
       compute: { module: device.createShaderModule({ code: SKY_ATLAS_WGSL }), entryPoint: 'main' },
+    });
+    this.diskNoisePipeline = device.createComputePipeline({
+      layout: 'auto',
+      compute: { module: device.createShaderModule({ code: DISK_NOISE_WGSL }), entryPoint: 'main' },
     });
     const presentModule = device.createShaderModule({ code: PRESENT_WGSL });
     this.presentPipeline = device.createRenderPipeline({
@@ -673,9 +679,9 @@ export class FallfableRenderer {
     return this.device.createTexture({
       label,
       dimension: '3d',
-      size: { width: DISK_NOISE_SIZE, height: DISK_NOISE_SIZE, depthOrArrayLayers: DISK_NOISE_SIZE },
-      format: 'r8unorm',
-      usage: TEXTURE_USAGE.COPY_DST | TEXTURE_USAGE.TEXTURE_BINDING,
+      size: { width: DISK_NOISE_WIDTH, height: DISK_NOISE_HEIGHT, depthOrArrayLayers: DISK_NOISE_DEPTH },
+      format: 'rgba8unorm',
+      usage: TEXTURE_USAGE.STORAGE_BINDING | TEXTURE_USAGE.TEXTURE_BINDING,
     });
   }
 
@@ -696,12 +702,19 @@ export class FallfableRenderer {
   }
 
   private generateDiskNoise(): void {
-    this.device.queue.writeTexture(
-      { texture: this.diskNoiseTexture },
-      buildDiskNoiseData(),
-      { bytesPerRow: DISK_NOISE_BYTES_PER_ROW, rowsPerImage: DISK_NOISE_SIZE },
-      { width: DISK_NOISE_SIZE, height: DISK_NOISE_SIZE, depthOrArrayLayers: DISK_NOISE_SIZE },
-    );
+    const bindGroup = this.device.createBindGroup({
+      layout: this.diskNoisePipeline.getBindGroupLayout(0),
+      entries: [
+        { binding: 0, resource: this.diskNoiseTexture.createView({ dimension: '3d' }) },
+      ],
+    });
+    const encoder = this.device.createCommandEncoder();
+    const pass = encoder.beginComputePass();
+    pass.setPipeline(this.diskNoisePipeline);
+    pass.setBindGroup(0, bindGroup);
+    pass.dispatchWorkgroups(Math.ceil(DISK_NOISE_WIDTH / 4), Math.ceil(DISK_NOISE_HEIGHT / 4), Math.ceil(DISK_NOISE_DEPTH / 4));
+    pass.end();
+    this.device.queue.submit([encoder.finish()]);
   }
 
   private packUniforms(frame: SceneFrame): void {
@@ -758,89 +771,4 @@ function timestampDurationMs(data: BigUint64Array, range: TimestampRange | undef
   const end = data[range[1]];
   const durationNs = end > begin ? end - begin : 0n;
   return Number(durationNs) / 1_000_000;
-}
-
-function buildDiskNoiseData(): Uint8Array {
-  const imageStride = DISK_NOISE_BYTES_PER_ROW * DISK_NOISE_SIZE;
-  const data = new Uint8Array(imageStride * DISK_NOISE_SIZE);
-  for (let z = 0; z < DISK_NOISE_SIZE; z += 1) {
-    for (let y = 0; y < DISK_NOISE_SIZE; y += 1) {
-      const row = z * imageStride + y * DISK_NOISE_BYTES_PER_ROW;
-      for (let x = 0; x < DISK_NOISE_SIZE; x += 1) {
-        const noise = periodicFbm3(x + 0.5, y + 0.5, z + 0.5, DISK_NOISE_SIZE);
-        data[row + x] = Math.round(Math.min(Math.max(noise, 0), 1) * 255);
-      }
-    }
-  }
-  return data;
-}
-
-function periodicFbm3(x: number, y: number, z: number, period: number): number {
-  let total = 0;
-  let amp = 0.5;
-  let qx = x;
-  let qy = y;
-  let qz = z;
-  let octavePeriod = period;
-  for (let i = 0; i < 3; i += 1) {
-    total += amp * periodicValueNoise(qx, qy, qz, octavePeriod);
-    qx = qx * 2 + 7.7;
-    qy = qy * 2 + 3.1;
-    qz = qz * 2 + 1.9;
-    octavePeriod *= 2;
-    amp *= 0.5;
-  }
-  return total;
-}
-
-function periodicValueNoise(x: number, y: number, z: number, period: number): number {
-  const ix = Math.floor(x);
-  const iy = Math.floor(y);
-  const iz = Math.floor(z);
-  const fx = x - ix;
-  const fy = y - iy;
-  const fz = z - iz;
-  const sx = smooth01(fx);
-  const sy = smooth01(fy);
-  const sz = smooth01(fz);
-  const x0 = wrapIndex(ix, period);
-  const x1 = wrapIndex(ix + 1, period);
-  const y0 = wrapIndex(iy, period);
-  const y1 = wrapIndex(iy + 1, period);
-  const z0 = wrapIndex(iz, period);
-  const z1 = wrapIndex(iz + 1, period);
-
-  const n000 = hashIndex3(x0, y0, z0);
-  const n100 = hashIndex3(x1, y0, z0);
-  const n010 = hashIndex3(x0, y1, z0);
-  const n110 = hashIndex3(x1, y1, z0);
-  const n001 = hashIndex3(x0, y0, z1);
-  const n101 = hashIndex3(x1, y0, z1);
-  const n011 = hashIndex3(x0, y1, z1);
-  const n111 = hashIndex3(x1, y1, z1);
-
-  const nx00 = mix(n000, n100, sx);
-  const nx10 = mix(n010, n110, sx);
-  const nx01 = mix(n001, n101, sx);
-  const nx11 = mix(n011, n111, sx);
-  return mix(mix(nx00, nx10, sy), mix(nx01, nx11, sy), sz);
-}
-
-function hashIndex3(x: number, y: number, z: number): number {
-  let h = Math.imul(x + 0x9e3779b9, 0x85ebca6b) ^ Math.imul(y + 0xc2b2ae35, 0x27d4eb2f) ^ Math.imul(z + 0x165667b1, 0x9e3779b1);
-  h = Math.imul(h ^ (h >>> 15), 0x2c1b3c6d);
-  h = Math.imul(h ^ (h >>> 12), 0x297a2d39);
-  return ((h ^ (h >>> 15)) >>> 0) / 0x100000000;
-}
-
-function wrapIndex(value: number, period: number): number {
-  return ((value % period) + period) % period;
-}
-
-function smooth01(value: number): number {
-  return value * value * (3 - 2 * value);
-}
-
-function mix(a: number, b: number, t: number): number {
-  return a + (b - a) * t;
 }

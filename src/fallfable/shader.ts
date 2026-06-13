@@ -169,6 +169,81 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
 }
 `;
 
+export const DISK_NOISE_WGSL = /* wgsl */ `
+const DISK_NOISE_WIDTH = 256u;
+const DISK_NOISE_HEIGHT = 256u;
+const DISK_NOISE_DEPTH = 64u;
+const DISK_NOISE_OCTAVES = 5;
+
+@group(0) @binding(0) var noiseOut: texture_storage_3d<rgba8unorm, write>;
+
+fn wrap_index(value: i32, period: u32) -> u32 {
+  let p = i32(period);
+  return u32(((value % p) + p) % p);
+}
+
+fn hash_index3(x: u32, y: u32, z: u32) -> f32 {
+  var h = (x + 0x9e3779b9u) * 0x85ebca6bu;
+  h = h ^ ((y + 0xc2b2ae35u) * 0x27d4eb2fu);
+  h = h ^ ((z + 0x165667b1u) * 0x9e3779b1u);
+  h = (h ^ (h >> 15u)) * 0x2c1b3c6du;
+  h = (h ^ (h >> 12u)) * 0x297a2d39u;
+  h = h ^ (h >> 15u);
+  return f32(h) * 2.3283064365386963e-10;
+}
+
+fn periodic_value_noise(p: vec3<f32>, period: vec3<u32>) -> f32 {
+  let i = vec3<i32>(floor(p));
+  let f = fract(p);
+  let s = f * f * (3.0 - 2.0 * f);
+  let x0 = wrap_index(i.x, period.x);
+  let x1 = wrap_index(i.x + 1, period.x);
+  let y0 = wrap_index(i.y, period.y);
+  let y1 = wrap_index(i.y + 1, period.y);
+  let z0 = wrap_index(i.z, period.z);
+  let z1 = wrap_index(i.z + 1, period.z);
+
+  let n000 = hash_index3(x0, y0, z0);
+  let n100 = hash_index3(x1, y0, z0);
+  let n010 = hash_index3(x0, y1, z0);
+  let n110 = hash_index3(x1, y1, z0);
+  let n001 = hash_index3(x0, y0, z1);
+  let n101 = hash_index3(x1, y0, z1);
+  let n011 = hash_index3(x0, y1, z1);
+  let n111 = hash_index3(x1, y1, z1);
+
+  return mix(
+    mix(mix(n000, n100, s.x), mix(n010, n110, s.x), s.y),
+    mix(mix(n001, n101, s.x), mix(n011, n111, s.x), s.y),
+    s.z
+  );
+}
+
+fn periodic_fbm3(p: vec3<f32>) -> f32 {
+  var total = 0.0;
+  var amp = 0.5;
+  var q = p;
+  var period = vec3<u32>(DISK_NOISE_WIDTH, DISK_NOISE_HEIGHT, DISK_NOISE_DEPTH);
+  for (var i = 0; i < DISK_NOISE_OCTAVES; i = i + 1) {
+    total = total + amp * periodic_value_noise(q, period);
+    q = q * 2.0 + vec3<f32>(7.7, 3.1, 1.9);
+    period = period * vec3<u32>(2u);
+    amp = amp * 0.5;
+  }
+  return total;
+}
+
+@compute @workgroup_size(4, 4, 4)
+fn main(@builtin(global_invocation_id) id: vec3<u32>) {
+  if (id.x >= DISK_NOISE_WIDTH || id.y >= DISK_NOISE_HEIGHT || id.z >= DISK_NOISE_DEPTH) {
+    return;
+  }
+  let p = vec3<f32>(f32(id.x), f32(id.y), f32(id.z)) + vec3<f32>(0.5);
+  let noise = clamp(periodic_fbm3(p), 0.0, 1.0);
+  textureStore(noiseOut, vec3<i32>(id), vec4<f32>(noise, 0.0, 0.0, 1.0));
+}
+`;
+
 export const TRACE_WGSL = /* wgsl */ `
 struct Uniforms {
   camPosition: vec4<f32>, // t, x, y, z
@@ -193,6 +268,7 @@ struct Uniforms {
 @group(0) @binding(6) var lensImage: texture_2d<f32>;
 @group(0) @binding(7) var diskNoiseSampler: sampler;
 @group(0) @binding(8) var diskNoise: texture_3d<f32>;
+const DISK_NOISE_PERIOD = vec3<f32>(256.0, 256.0, 64.0);
 
 // ---------------------------------------------------------------- geometry
 
@@ -408,7 +484,7 @@ fn disk_turbulence(
     cos(spiralAz) * arcRadius,
     sin(spiralAz) * arcRadius + q.z
   );
-  return textureSampleLevel(diskNoise, diskNoiseSampler, fract(noiseP * (4.4 / inner) / 64.0), 0.0).r;
+  return textureSampleLevel(diskNoise, diskNoiseSampler, fract(noiseP * (4.4 / inner) / DISK_NOISE_PERIOD), 0.0).r;
 }
 
 fn disk_sample(pos: vec4<f32>, mom: vec4<f32>, dl: f32) -> DiskSample {
