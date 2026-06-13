@@ -242,6 +242,7 @@ function applyPreset(id: string): void {
   const preset = PRESETS.find((p) => p.id === id);
   if (!preset) return;
   state = preset.create();
+  setExposure(preset.exposure ?? 1);
   setRunning(true);
   faceInward();
   previewDirty = true;
@@ -680,13 +681,13 @@ const BENCHMARK_POINTS: FallfableBenchmarkPoint[] = [
     id: 'isco-lens',
     label: 'ISCO lens',
     description: 'marginally stable orbit with strong near-disk lensing',
-    create: () => benchmarkSnapshot(presetState('isco')),
+    create: () => benchmarkSnapshot(presetState('isco'), 0, presetExposure('isco')),
   },
   {
     id: 'photon-whirl',
     label: 'photon whirl',
     description: 'near photon-orbit view where many rays skim before escaping',
-    create: () => benchmarkSnapshot(presetState('whirl')),
+    create: () => benchmarkSnapshot(presetState('whirl'), 0, presetExposure('whirl')),
   },
   {
     id: 'horizon-graze',
@@ -720,7 +721,7 @@ const BENCHMARK_POINTS: FallfableBenchmarkPoint[] = [
   },
 ];
 
-function benchmarkSnapshot(pointState: PlayerState, pitchBias = 0): FallfableViewSnapshot {
+function benchmarkSnapshot(pointState: PlayerState, pitchBias = 0, exposure = currentExposure()): FallfableViewSnapshot {
   const view = inwardView(pointState);
   return {
     state: clonePlayerState(pointState),
@@ -729,8 +730,12 @@ function benchmarkSnapshot(pointState: PlayerState, pitchBias = 0): FallfableVie
     pitch: Math.max(-1.35, Math.min(1.35, view.pitch + pitchBias)),
     quality: currentQuality(),
     diagnosticMode: currentDiagnosticMode(),
-    exposure: currentExposure(),
+    exposure,
   };
+}
+
+function presetExposure(id: string): number {
+  return PRESETS.find((entry) => entry.id === id)?.exposure ?? 1;
 }
 
 function inwardView(source: PlayerState): { yaw: number; pitch: number } {

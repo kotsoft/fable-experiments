@@ -179,6 +179,7 @@ export interface Preset {
   id: string;
   label: string;
   description: string;
+  exposure?: number;
   create(): PlayerState;
 }
 
@@ -194,6 +195,7 @@ export const PRESETS: Preset[] = [
     id: 'isco',
     label: 'ISCO orbit',
     description: 'marginally stable circular orbit',
+    exposure: 0.1,
     create: () => {
       const position = equatorialPosition(ISCO * 1.002, 0);
       return stateFromFourVelocity(position, circularOrbitFourVelocity(spatial(position), PARAMS, true));
@@ -203,6 +205,7 @@ export const PRESETS: Preset[] = [
     id: 'whirl',
     label: 'photon skim',
     description: 'zoom-whirl past the prograde photon orbit',
+    exposure: 0.1,
     create: () => launchLocal({ r: PHOTON_PROGRADE * 2.4, phi: Math.PI, betaRadial: -0.34, betaTangential: 0.62 }),
   },
   {
