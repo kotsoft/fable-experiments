@@ -518,6 +518,36 @@
         cost low enough for ~1200-step rays at interactive resolutions.
       </p>
 
+      <h2>8 — Reading the controls</h2>
+      <p>
+        The minimap is a trajectory launcher. Press to place the observer, drag to choose the
+        launch velocity, and release to fall. A short drag means "start locally at rest"; a longer
+        drag sets the velocity measured by the Kerr-Schild Eulerian observer from section 2. If the
+        drag has a clear direction, the camera initially follows the trajectory. Dragging on the
+        main view switches back to first-person look control.
+      </p>
+      <p>
+        High-speed flybys can make the black hole look as if it shrinks or slides away. That is the
+        aberration from the tetrad diagram, not a texture placement bug: a fast comoving observer
+        sees side directions compressed by roughly a factor of 1/γ, while light crowds toward the
+        direction of motion. Photon-skim and ISCO presets can also become extremely bright from
+        Doppler beaming and lensing, so those presets lower exposure; the exposure slider is there
+        for the same reason.
+      </p>
+      <p>
+        The visualization menu is for debugging the ray tracer. <em>termination</em> colors show
+        how rays ended: sky escape, shadow, disk opacity, singularity, or max steps. <em>cost</em>
+        colors show expensive pixels, usually horizon skimmers and disk-grazing rays. The combined
+        view overlays both, which is useful when tuning performance because the slowest pixels are
+        not always the largest regions on screen.
+      </p>
+      <p>
+        The physics/art boundary is deliberate. Geodesic motion, tetrads, horizon crossing,
+        redshift, Doppler beaming, and lensing are the relativistic core. The turbulent disk
+        texture, hotspot flares, plunge glow below the ISCO, and velocity shear are visualization
+        choices tuned to make the motion readable.
+      </p>
+
       <p class="note">
         Back to the <a href="/fallfable/">demo</a>, or the earlier pages:
         <a href="/blackhole/tutorial.html">how light bends</a> ·

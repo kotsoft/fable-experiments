@@ -104,41 +104,70 @@ export function stepPlayer(state: PlayerState, dTau: number): PlayerState {
     // Substep shrinks like r^2 so the integrator survives the violent
     // gradients near the ring region deep inside the inner horizon.
     const h = Math.min(remaining, Math.max(2e-6, 0.0025 * Math.min(r * r * r, 1)));
-    phase = rk4Step(phase, PARAMS, h);
+    const nextPhase = rk4Step(phase, PARAMS, h);
+    if (!isFinitePhase(nextPhase)) {
+      return recoverInvalidStep(makeState(phase, state.tau + advanced), h);
+    }
+    phase = nextPhase;
     advanced += h;
     remaining -= h;
     r = ksRadius(spatial(phase.position), PARAMS);
+    if (!Number.isFinite(r)) {
+      return recoverInvalidStep(makeState(phase, state.tau + advanced), h);
+    }
     if (r <= SINGULARITY_CUTOFF) {
       return { ...phase, r, tau: state.tau + advanced, ended: true };
     }
   }
   const next: PlayerState = { ...phase, r, tau: state.tau + advanced };
-  if (constraintResidual(next) > 0.05) {
-    if (state.r > INNER_HORIZON * 2) {
-      return { ...state, ended: true };
-    }
-    // A generic worldline cannot be smoothly continued through the Cauchy
-    // horizon in this chart (its momentum diverges on the sheet the ingoing
-    // coordinates do not cover) - and beyond it GR is non-deterministic
-    // anyway. Carry the indestructible observer inward by hand, at rest in
-    // the always-timelike Eulerian frame.
-    // The fallback is tuned to contract x/y gently for visual continuity while
-    // damping z faster so off-plane numerical drift settles back toward the disk.
-    const p: Vec3 = {
-      x: state.position.x * MANUAL_CARRY_HORIZONTAL_SCALE,
-      y: state.position.y * MANUAL_CARRY_HORIZONTAL_SCALE,
-      z: state.position.z * MANUAL_CARRY_VERTICAL_SCALE,
-    };
-    const u = eulerianObserver(p, PARAMS);
-    return makeState(
-      {
-        position: { t: state.position.t + dTau, ...p },
-        momentum: lowerVector(p, PARAMS, u),
-      },
-      state.tau + dTau,
-    );
+  const residual = constraintResidual(next);
+  if (!Number.isFinite(residual) || residual > 0.05) {
+    return recoverInvalidStep(state, dTau);
   }
   return next;
+}
+
+function isFinitePhase(phase: PhaseState): boolean {
+  return (
+    Number.isFinite(phase.position.t) &&
+    Number.isFinite(phase.position.x) &&
+    Number.isFinite(phase.position.y) &&
+    Number.isFinite(phase.position.z) &&
+    Number.isFinite(phase.momentum.t) &&
+    Number.isFinite(phase.momentum.x) &&
+    Number.isFinite(phase.momentum.y) &&
+    Number.isFinite(phase.momentum.z)
+  );
+}
+
+function recoverInvalidStep(state: PlayerState, dTau: number): PlayerState {
+  if (state.r > INNER_HORIZON * 2) {
+    return { ...state, ended: true };
+  }
+  return carryObserverInward(state, dTau);
+}
+
+function carryObserverInward(state: PlayerState, dTau: number): PlayerState {
+  // A generic worldline cannot be smoothly continued through the Cauchy
+  // horizon in this chart (its momentum diverges on the sheet the ingoing
+  // coordinates do not cover) - and beyond it GR is non-deterministic
+  // anyway. Carry the indestructible observer inward by hand, at rest in
+  // the always-timelike Eulerian frame.
+  // The fallback is tuned to contract x/y gently for visual continuity while
+  // damping z faster so off-plane numerical drift settles back toward the disk.
+  const p: Vec3 = {
+    x: state.position.x * MANUAL_CARRY_HORIZONTAL_SCALE,
+    y: state.position.y * MANUAL_CARRY_HORIZONTAL_SCALE,
+    z: state.position.z * MANUAL_CARRY_VERTICAL_SCALE,
+  };
+  const u = eulerianObserver(p, PARAMS);
+  return makeState(
+    {
+      position: { t: state.position.t + dTau, ...p },
+      momentum: lowerVector(p, PARAMS, u),
+    },
+    state.tau + dTau,
+  );
 }
 
 export interface PreviewPoint {
@@ -179,6 +208,7 @@ export interface Preset {
   id: string;
   label: string;
   description: string;
+  exposure?: number;
   create(): PlayerState;
 }
 
@@ -194,6 +224,7 @@ export const PRESETS: Preset[] = [
     id: 'isco',
     label: 'ISCO orbit',
     description: 'marginally stable circular orbit',
+    exposure: 0.1,
     create: () => {
       const position = equatorialPosition(ISCO * 1.002, 0);
       return stateFromFourVelocity(position, circularOrbitFourVelocity(spatial(position), PARAMS, true));
@@ -203,6 +234,7 @@ export const PRESETS: Preset[] = [
     id: 'whirl',
     label: 'photon skim',
     description: 'zoom-whirl past the prograde photon orbit',
+    exposure: 0.1,
     create: () => launchLocal({ r: PHOTON_PROGRADE * 2.4, phi: Math.PI, betaRadial: -0.34, betaTangential: 0.62 }),
   },
   {

@@ -1020,7 +1020,10 @@ animateCanvasWhenVisible(
 
   function renderMetricExplorer(): void {
     clearSvg(svg);
-    const massSolar = 10 ** parseFloat(massSlider.value);
+    const parsedMassLog = parseFloat(massSlider.value);
+    const massLog = Number.isFinite(parsedMassLog) && parsedMassLog > 0 ? parsedMassLog : 0.001;
+    if (massSlider.value !== massLog.toString()) massSlider.value = massLog.toString();
+    const massSolar = 10 ** massLog;
     const rsKm = rsPerSolarMassKm * massSolar;
     const parsedRho = parseFloat(radiusSlider.value);
     const rho = Number.isFinite(parsedRho) && parsedRho > 1 ? parsedRho : 1.001;

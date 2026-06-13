@@ -21,8 +21,8 @@ import {
 } from './player';
 
 export interface PlannerCallbacks {
-  onPreview(state: PlayerState): void;
-  onCommit(state: PlayerState): void;
+  onPreview(state: PlayerState, launchHeading: PreviewPoint | null): void;
+  onCommit(state: PlayerState, launchHeading: PreviewPoint | null): void;
   /** Height above the equatorial plane applied to launches. */
   launchHeight?: () => number;
 }
@@ -65,6 +65,12 @@ export function createPlanner(container: HTMLElement, callbacks: PlannerCallback
     return { x: (sx - CENTER) / SCALE, y: -(sy - CENTER) / SCALE };
   };
 
+  const currentLaunchHeading = (): PreviewPoint | null => {
+    return dragVector && dragVector.px >= 10
+      ? { x: dragVector.x, y: dragVector.y }
+      : null;
+  };
+
   const placedState = (): PlayerState => {
     const height = callbacks.launchHeight?.() ?? 0;
     if (!dragVector || dragVector.px < 10) {
@@ -95,7 +101,7 @@ export function createPlanner(container: HTMLElement, callbacks: PlannerCallback
     const phi = Math.atan2(w.y, w.x);
     anchor = { x: clampedRho * Math.cos(phi), y: clampedRho * Math.sin(phi), r, phi };
     dragVector = null;
-    callbacks.onPreview(placedState());
+    callbacks.onPreview(placedState(), currentLaunchHeading());
   });
   canvas.addEventListener('pointermove', (event) => {
     if (!dragging) return;
@@ -103,13 +109,13 @@ export function createPlanner(container: HTMLElement, callbacks: PlannerCallback
     const dx = w.x - anchor.x;
     const dy = w.y - anchor.y;
     dragVector = { x: dx, y: dy, px: Math.hypot(dx, dy) * SCALE };
-    callbacks.onPreview(placedState());
+    callbacks.onPreview(placedState(), currentLaunchHeading());
   });
   const finish = (event: PointerEvent) => {
     if (!dragging) return;
     dragging = false;
     if (canvas.hasPointerCapture(event.pointerId)) canvas.releasePointerCapture(event.pointerId);
-    callbacks.onCommit(placedState());
+    callbacks.onCommit(placedState(), currentLaunchHeading());
     dragVector = null;
   };
   canvas.addEventListener('pointerup', finish);
@@ -129,11 +135,15 @@ export function createPlanner(container: HTMLElement, callbacks: PlannerCallback
 
   const draw = () => {
     ctx.clearRect(0, 0, SIZE, SIZE);
-    ctx.fillStyle = '#05060a';
+    ctx.save();
+    ctx.beginPath();
+    ctx.arc(CENTER, CENTER, CENTER - 1, 0, Math.PI * 2);
+    ctx.clip();
+    ctx.fillStyle = '#05060a8c';
     ctx.fillRect(0, 0, SIZE, SIZE);
 
     // Faint polar grid.
-    ctx.strokeStyle = '#11141c';
+    ctx.strokeStyle = '#2b334766';
     ctx.lineWidth = 1;
     for (let r = 4; r <= MAP_RADIUS; r += 4) {
       ctx.beginPath();
@@ -146,9 +156,9 @@ export function createPlanner(container: HTMLElement, callbacks: PlannerCallback
       CENTER, CENTER, equatorialRho(DISK_INNER, PARAMS) * SCALE,
       CENTER, CENTER, equatorialRho(DISK_OUTER, PARAMS) * SCALE,
     );
-    diskGradient.addColorStop(0, '#e8b87330');
-    diskGradient.addColorStop(0.25, '#a4763c18');
-    diskGradient.addColorStop(1, '#a4763c04');
+    diskGradient.addColorStop(0, '#ffd38a4a');
+    diskGradient.addColorStop(0.25, '#d3944a2b');
+    diskGradient.addColorStop(1, '#d3944a0c');
     ctx.beginPath();
     ctx.arc(CENTER, CENTER, equatorialRho(DISK_OUTER, PARAMS) * SCALE, 0, Math.PI * 2);
     ctx.arc(CENTER, CENTER, equatorialRho(DISK_INNER, PARAMS) * SCALE, 0, Math.PI * 2, true);
@@ -159,22 +169,22 @@ export function createPlanner(container: HTMLElement, callbacks: PlannerCallback
     ctx.beginPath();
     ctx.arc(CENTER, CENTER, equatorialRho(ERGOSPHERE, PARAMS) * SCALE, 0, Math.PI * 2);
     ctx.arc(CENTER, CENTER, equatorialRho(HORIZON, PARAMS) * SCALE, 0, Math.PI * 2, true);
-    ctx.fillStyle = '#3d2f5f2e';
+    ctx.fillStyle = '#6b5a9e38';
     ctx.fill();
-    ring(ERGOSPHERE, '#6b5a9e66', [4, 4]);
+    ring(ERGOSPHERE, '#a18bdfaa', [4, 4], 1.2);
 
     // Photon orbits and ISCO.
-    ring(PHOTON_RETROGRADE, '#4d536144', [2, 5]);
-    ring(PHOTON_PROGRADE, '#4d536166', [2, 5]);
-    ring(ISCO, '#e8b87355', [6, 5]);
+    ring(PHOTON_RETROGRADE, '#9aa3b46e', [2, 5], 1.1);
+    ring(PHOTON_PROGRADE, '#aeb7c98c', [2, 5], 1.15);
+    ring(ISCO, '#ffd38ab8', [6, 5], 1.25);
 
     // Horizon.
     ctx.beginPath();
     ctx.arc(CENTER, CENTER, equatorialRho(HORIZON, PARAMS) * SCALE, 0, Math.PI * 2);
-    ctx.fillStyle = '#000';
+    ctx.fillStyle = '#000000cc';
     ctx.fill();
-    ctx.strokeStyle = '#2a2e3a';
-    ctx.lineWidth = 1.4;
+    ctx.strokeStyle = '#b6c0d0aa';
+    ctx.lineWidth = 1.6;
     ctx.stroke();
 
     if (!view) return;
@@ -187,9 +197,9 @@ export function createPlanner(container: HTMLElement, callbacks: PlannerCallback
       ctx.beginPath();
       ctx.moveTo(a.x, a.y);
       ctx.lineTo(b.x, b.y);
-      ctx.strokeStyle = '#e8b873';
+      ctx.strokeStyle = '#ffd38a';
       ctx.globalAlpha = 0.85 * (1 - i / pts.length) + 0.05;
-      ctx.lineWidth = 1.6;
+      ctx.lineWidth = 1.9;
       ctx.stroke();
     }
     ctx.globalAlpha = 1;
@@ -211,10 +221,14 @@ export function createPlanner(container: HTMLElement, callbacks: PlannerCallback
     ctx.shadowBlur = 0;
 
     // Labels.
-    ctx.fillStyle = '#6c7180';
+    ctx.fillStyle = '#c3cad8';
+    ctx.shadowColor = '#000';
+    ctx.shadowBlur = 4;
     ctx.font = '10px ui-monospace, SFMono-Regular, Consolas, monospace';
     ctx.fillText('ergosphere', CENTER + equatorialRho(ERGOSPHERE, PARAMS) * SCALE * 0.72, CENTER - equatorialRho(ERGOSPHERE, PARAMS) * SCALE * 0.78);
     ctx.fillText('ISCO', CENTER + equatorialRho(ISCO, PARAMS) * SCALE * 0.76, CENTER + equatorialRho(ISCO, PARAMS) * SCALE * 0.84);
+    ctx.shadowBlur = 0;
+    ctx.restore();
   };
 
   return {
